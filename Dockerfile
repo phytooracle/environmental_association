@@ -87,9 +87,9 @@ RUN apt-get install -y \
 RUN rm -rf \
     ./libssl1.1_1.1.1f-1ubuntu2_amd64.deb
 
-RUN wget https://files.renci.org/pub/irods/releases/4.1.10/ubuntu14/irods-icommands-4.1.10-ubuntu14-x86_64.deb \
-    && apt-get install -y ./irods-icommands-4.1.10-ubuntu14-x86_64.deb
-# RUN apt install -y irods-icommands
+# RUN wget https://files.renci.org/pub/irods/releases/4.1.10/ubuntu14/irods-icommands-4.1.10-ubuntu14-x86_64.deb \
+#     && apt-get install -y ./irods-icommands-4.1.10-ubuntu14-x86_64.deb
+RUN apt install -y irods-icommands
 RUN mkdir -p /root/.irods
 RUN echo "{ \"irods_zone_name\": \"iplant\", \"irods_host\": \"data.cyverse.org\", \"irods_port\": 1247, \"irods_user_name\": \"$IRODS_USER\" }" > /root/.irods/irods_environment.json
 RUN apt-get autoremove -y
