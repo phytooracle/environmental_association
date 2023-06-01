@@ -249,7 +249,7 @@ def process_file(jfile):
             df['time'] = date
 
             # Add PAR to df 
-            df['par'] = item['sensor par']['value']
+            df['par'] = float(item['sensor par']['value'])
             
             dfs.append(df)
     return dfs
