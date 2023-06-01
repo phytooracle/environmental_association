@@ -577,7 +577,6 @@ def main():
         # Clean up input data
         shutil.rmtree(env_path)
         shutil.rmtree(data_path)
-        shutil.rmtree(csv_path)
 
 
 # --------------------------------------------------
