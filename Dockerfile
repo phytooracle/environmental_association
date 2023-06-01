@@ -70,4 +70,29 @@ RUN export C_INCLUDE_PATH=/usr/include/gdal
 RUN apt-get install -y locales && locale-gen en_US.UTF-8
 ENV LANG='en_US.UTF-8' LANGUAGE='en_US:en' LC_ALL='en_US.UTF-8'
 
+# Install iRODS
+ARG PY_UR='python3-urllib3_1.26.9-1_all.deb'
+ARG LI_SS='libssl1.1_1.1.1f-1ubuntu2.16_amd64.deb'
+ARG PY_RE='python3-requests_2.25.1+dfsg-2_all.deb'
+ARG LSB_RELEASE="bionic" 
+
+RUN wget -qO - https://packages.irods.org/irods-signing-key.asc | apt-key add -
+RUN echo "deb [arch=amd64] https://packages.irods.org/apt/ ${LSB_RELEASE}  main" \
+     tee /etc/apt/sources.list.d/renci-irods.list
+
+RUN wget -c \
+    http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb
+RUN apt-get install -y \
+    ./libssl1.1_1.1.1f-1ubuntu2_amd64.deb
+RUN rm -rf \
+    ./libssl1.1_1.1.1f-1ubuntu2_amd64.deb
+
+RUN wget https://files.renci.org/pub/irods/releases/4.1.10/ubuntu14/irods-icommands-4.1.10-ubuntu14-x86_64.deb \
+    && apt-get install -y ./irods-icommands-4.1.10-ubuntu14-x86_64.deb
+# RUN apt install -y irods-icommands
+RUN mkdir -p /root/.irods
+RUN echo "{ \"irods_zone_name\": \"iplant\", \"irods_host\": \"data.cyverse.org\", \"irods_port\": 1247, \"irods_user_name\": \"$IRODS_USER\" }" > /root/.irods/irods_environment.json
+RUN apt-get autoremove -y
+RUN apt-get clean
+
 ENTRYPOINT [ "/usr/local/bin/python3.7", "/opt/environmental_association.py" ]
