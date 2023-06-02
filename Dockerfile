@@ -77,10 +77,10 @@ ARG PY_RE='python3-requests_2.25.1+dfsg-2_all.deb'
 ARG LSB_RELEASE="bionic" 
 
 RUN wget -qO - https://packages.irods.org/irods-signing-key.asc | apt-key add -
-RUN echo "deb [arch=amd64] https://packages.irods.org/apt/ ${LSB_RELEASE}  main" \
-     tee /etc/apt/sources.list.d/renci-irods.list
+RUN echo "deb [arch=amd64] https://packages.irods.org/apt/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/renci-irods.list
 
-RUN apt-get update -y && apt-get upgrade -y
+RUN apt-get update -y \
+    && apt-get upgrade -y
 
 RUN wget -c \
     http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
