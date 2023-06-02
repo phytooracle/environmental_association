@@ -235,23 +235,31 @@ def process_file(jfile):
     '''
         
     dfs = []
-    with open(jfile) as f:
-        data = json.load(f)
-        for item in data['environment_sensor_readings']:
-            # Convert to appropriate datetime format
-            date = pd.to_datetime(item['timestamp'], format="%Y.%m.%d-%H:%M:%S")
-            
-            # Create a dataframe from the data
-            data = {key: float(value['value']) for key, value in item['weather_station'].items()} #f"{key}_{value['unit']}"
-            df = pd.DataFrame(data, index=[0])
 
-            # Add datetime to the dataframe
-            df['time'] = date
+    try:
+        with open(jfile) as f:
+            data = json.load(f)
+            for item in data['environment_sensor_readings']:
+                # Convert to appropriate datetime format
+                date = pd.to_datetime(item['timestamp'], format="%Y.%m.%d-%H:%M:%S")
+                
+                # Create a dataframe from the data
+                data = {key: float(value['value']) for key, value in item['weather_station'].items()} #f"{key}_{value['unit']}"
+                df = pd.DataFrame(data, index=[0])
 
-            # Add PAR to df 
-            df['par'] = float(item['sensor par']['value'])
-            
-            dfs.append(df)
+                # Add datetime to the dataframe
+                df['time'] = date
+
+                # Add PAR to df 
+                df['par'] = float(item['sensor par']['value'])
+                
+                dfs.append(df)
+
+    except:
+        
+        print("An error occurred while reading the JSON file or processing the data.")
+        dfs = []
+
     return dfs
 
 
