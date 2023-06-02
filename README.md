@@ -2,7 +2,7 @@
 This repo is used to associate the EnvironmentLogger data (containing weather and other ambient condition sensors) from the Maricopa Field Scanner to the plant detections resulting from the PhytoOracle processing pipelines. 
 
 ## Download container
-To download the landmark selection container run:
+To download the environmental association container run:
 
 ```bash
 singularity build environmental_association.simg docker://phytooracle/environmental_association:latest
