@@ -574,7 +574,8 @@ def main():
             if args.instrument == 'FLIR':
 
                 # Calculate normalized canopy temperature
-                result['normalized_temp'] = result['median'] - result['temperature']
+#                 result['normalized_temp'] = result['median'] - result['temperature']
+                result['canopy_temperature_depression'] = result['temperature'] - result['median']
 
             # Drop potentially erroneous column
             result = result.drop('brightness', axis=1)
