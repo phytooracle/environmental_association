@@ -483,8 +483,42 @@ def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=T
         # code to handle the exception
         print(f"An error occurred while downloading data: {e}")
 
+        
+#-------------------------------------------------------------------------------
+def get_vapor_pressure_deficit(air_temp, canopy_temp, relative_humidity):
+    '''
+    Calculates vapor pressure deficit using Tetens equation for approximating vapor pressure of water.
+    
+    Input:
+        - air_temp: Temperature of the ambient air (degC)
+        - canopy_temp: Temperature of the plant canopy (degC)
+        - relative_humidity: Relative Humidity (%)
 
-# --------------------------------------------------
+    Output: 
+        - vapor_pressure_deficit: Vapor Pressure Deficit (kPa)
+    '''
+    # Compute saturation vapor pressure in kPa for air temperature using Tetens equation.
+    if air_temp >= 0:
+        P_sat_air = 0.61078 * math.exp((17.27 * air_temp) / (air_temp + 237.3))
+    else:
+        P_sat_air = 0.61078 * math.exp((21.875 * air_temp) / (air_temp + 265.5))
+        
+    # Compute saturation vapor pressure in kPa for canopy temperature using Tetens equation.
+    if air_temp >= 0:
+        P_sat_canopy = 0.61078 * math.exp((17.27 * canopy_temp) / (canopy_temp + 237.3))
+    else:
+        P_sat_canopy = 0.61078 * math.exp((21.875 * canopy_temp) / (canopy_temp + 265.5))
+    
+    # Compute actual partial pressure of water vapor in the air
+    P_air = P_sat_air * (relative_humidity / 100)
+    
+    # Compute vapor pressure deficit
+    vapor_pressure_deficit = P_sat_canopy - P_air
+    
+    return vapor_pressure_deficit
+
+        
+#-------------------------------------------------------------------------------
 def main():
     """Make a jazz noise here"""
 
@@ -576,6 +610,9 @@ def main():
                 # Calculate normalized canopy temperature
 #                 result['normalized_temp'] = result['median'] - result['temperature']
                 result['canopy_temperature_depression'] = result['temperature'] - result['median']
+    
+                # Calculate vapor pressure deficit.
+                result['vapor_pressure_deficit'] = get_vapor_pressure_deficit(result['temperature'], result['median'], result['relHumidity'])
 
             # Drop potentially erroneous column
             result = result.drop('brightness', axis=1)
