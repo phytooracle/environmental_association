@@ -518,6 +518,35 @@ def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=T
     
 #     return vapor_pressure_deficit
 
+# def get_vapor_pressure_deficit(air_temp: float, canopy_temp: float, relative_humidity: float) -> float:
+#     """
+#     Calculate leaf vapor pressure deficit (VPD) given atmospheric temperature, leaf temperature, and relative humidity.
+    
+#     :param air_temp: The temperature of the atmosphere in degrees Celsius.
+#     :param canopy_temp: The temperature of the leaf in degrees Celsius.
+#     :param relative_humidity: The relative humidity as a percentage (0-100).
+#     :return: The calculated VPD in kPa.
+#     """
+#     # Convert temperatures to Kelvin
+#     canopy_temp += 273.15
+#     air_temp += 273.15
+    
+#     # Calculate saturation vapor pressures using the Tetens equation
+#     svp_leaf = 0.61078 * math.exp((17.27 * (canopy_temp - 273.15)) / (canopy_temp - 35.85))
+    
+#     if air_temp < 273.15:
+#         # Use different coefficients for temperatures below freezing
+#         svp_air = 0.61078 * math.exp((21.87 * (air_temp - 273.15)) / (air_temp - 7.66))
+#     else:
+#         svp_air = 0.61078 * math.exp((17.27 * (air_temp - 273.15)) / (air_temp - 35.85))
+    
+#     # Calculate actual vapor pressure
+#     avp_air = svp_air * (relative_humidity / 100)
+    
+#     # Calculate VPD
+#     vpd = svp_leaf - avp_air
+    
+#     return vpd
 def get_vapor_pressure_deficit(air_temp: float, canopy_temp: float, relative_humidity: float) -> float:
     """
     Calculate leaf vapor pressure deficit (VPD) given atmospheric temperature, leaf temperature, and relative humidity.
@@ -532,7 +561,11 @@ def get_vapor_pressure_deficit(air_temp: float, canopy_temp: float, relative_hum
     air_temp += 273.15
     
     # Calculate saturation vapor pressures using the Tetens equation
-    svp_leaf = 0.61078 * math.exp((17.27 * (canopy_temp - 273.15)) / (canopy_temp - 35.85))
+    if canopy_temp < 273.15:
+        # Use different coefficients for temperatures below freezing
+        svp_leaf = 0.61078 * math.exp((21.87 * (canopy_temp - 273.15)) / (canopy_temp - 7.66))
+    else:
+        svp_leaf = 0.61078 * math.exp((17.27 * (canopy_temp - 273.15)) / (canopy_temp - 35.85))
     
     if air_temp < 273.15:
         # Use different coefficients for temperatures below freezing
@@ -547,7 +580,7 @@ def get_vapor_pressure_deficit(air_temp: float, canopy_temp: float, relative_hum
     vpd = svp_leaf - avp_air
     
     return vpd
-        
+
 #-------------------------------------------------------------------------------
 def main():
     """Make a jazz noise here"""
