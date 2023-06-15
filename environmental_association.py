@@ -486,38 +486,67 @@ def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=T
 
         
 #-------------------------------------------------------------------------------
-def get_vapor_pressure_deficit(air_temp, canopy_temp, relative_humidity):
-    '''
-    Calculates vapor pressure deficit using Tetens equation for approximating vapor pressure of water.
+# def get_vapor_pressure_deficit(air_temp, canopy_temp, relative_humidity):
+#     '''
+#     Calculates vapor pressure deficit using Tetens equation for approximating vapor pressure of water.
     
-    Input:
-        - air_temp: Temperature of the ambient air (degC)
-        - canopy_temp: Temperature of the plant canopy (degC)
-        - relative_humidity: Relative Humidity (%)
+#     Input:
+#         - air_temp: Temperature of the ambient air (degC)
+#         - canopy_temp: Temperature of the plant canopy (degC)
+#         - relative_humidity: Relative Humidity (%)
 
-    Output: 
-        - vapor_pressure_deficit: Vapor Pressure Deficit (kPa)
-    '''
-    # Compute saturation vapor pressure in kPa for air temperature using Tetens equation.
-    if air_temp >= 0:
-        P_sat_air = 0.61078 * math.exp((17.27 * air_temp) / (air_temp + 237.3))
-    else:
-        P_sat_air = 0.61078 * math.exp((21.875 * air_temp) / (air_temp + 265.5))
+#     Output: 
+#         - vapor_pressure_deficit: Vapor Pressure Deficit (kPa)
+#     '''
+#     # Compute saturation vapor pressure in kPa for air temperature using Tetens equation.
+#     if air_temp >= 0:
+#         P_sat_air = 0.61078 * math.exp((17.27 * air_temp) / (air_temp + 237.3))
+#     else:
+#         P_sat_air = 0.61078 * math.exp((21.875 * air_temp) / (air_temp + 265.5))
         
-    # Compute saturation vapor pressure in kPa for canopy temperature using Tetens equation.
-    if air_temp >= 0:
-        P_sat_canopy = 0.61078 * math.exp((17.27 * canopy_temp) / (canopy_temp + 237.3))
-    else:
-        P_sat_canopy = 0.61078 * math.exp((21.875 * canopy_temp) / (canopy_temp + 265.5))
+#     # Compute saturation vapor pressure in kPa for canopy temperature using Tetens equation.
+#     if air_temp >= 0:
+#         P_sat_canopy = 0.61078 * math.exp((17.27 * canopy_temp) / (canopy_temp + 237.3))
+#     else:
+#         P_sat_canopy = 0.61078 * math.exp((21.875 * canopy_temp) / (canopy_temp + 265.5))
     
-    # Compute actual partial pressure of water vapor in the air
-    P_air = P_sat_air * (relative_humidity / 100)
+#     # Compute actual partial pressure of water vapor in the air
+#     P_air = P_sat_air * (relative_humidity / 100)
     
-    # Compute vapor pressure deficit
-    vapor_pressure_deficit = P_sat_canopy - P_air
+#     # Compute vapor pressure deficit
+#     vapor_pressure_deficit = P_sat_canopy - P_air
     
-    return vapor_pressure_deficit
+#     return vapor_pressure_deficit
 
+def get_vapor_pressure_deficit(air_temp: float, canopy_temp: float, relative_humidity: float) -> float:
+    """
+    Calculate leaf vapor pressure deficit (VPD) given atmospheric temperature, leaf temperature, and relative humidity.
+    
+    :param air_temp: The temperature of the atmosphere in degrees Celsius.
+    :param canopy_temp: The temperature of the leaf in degrees Celsius.
+    :param relative_humidity: The relative humidity as a percentage (0-100).
+    :return: The calculated VPD in kPa.
+    """
+    # Convert temperatures to Kelvin
+    canopy_temp += 273.15
+    air_temp += 273.15
+    
+    # Calculate saturation vapor pressures using the Tetens equation
+    svp_leaf = 0.61078 * math.exp((17.27 * (canopy_temp - 273.15)) / (canopy_temp - 35.85))
+    
+    if air_temp < 273.15:
+        # Use different coefficients for temperatures below freezing
+        svp_air = 0.61078 * math.exp((21.87 * (air_temp - 273.15)) / (air_temp - 7.66))
+    else:
+        svp_air = 0.61078 * math.exp((17.27 * (air_temp - 273.15)) / (air_temp - 35.85))
+    
+    # Calculate actual vapor pressure
+    avp_air = svp_air * (relative_humidity / 100)
+    
+    # Calculate VPD
+    vpd = svp_leaf - avp_air
+    
+    return vpd
         
 #-------------------------------------------------------------------------------
 def main():
