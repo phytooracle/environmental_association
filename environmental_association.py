@@ -20,6 +20,7 @@ import re
 import subprocess as sp
 import shutil
 import math
+import geopandas as gpd
 
 
 # --------------------------------------------------
@@ -47,16 +48,29 @@ def get_args():
                         '--crop',
                         help='Crop name of data to download',
                         type=str,
-                        choices=['sorghum', 'lettuce'],
+                        choices=['sorghum', 'lettuce', 'NA'],
                         required=True)
-    
+
+    parser.add_argument('-lev',
+                        '--level',
+                        help='Data level to download. Choices are 0, 1, 2, 3, or 4.',
+                        metavar='str',
+                        type=str,
+                        default='1')
+
     parser.add_argument('-i',
                         '--instrument',
                         help='Instrument (sensor) used to collect phenotype data.',
                         type=str,
                         choices=['FLIR', 'PS2'],
                         required=True)
-    
+
+    parser.add_argument('-d',
+                        '--data_path',
+                        help='Path to directory containing CSV files.',
+                        type=str,
+                        default=None)
+
     return parser.parse_args()
 
 
@@ -183,7 +197,7 @@ def scanalyzer_to_utm(gantry_x, gantry_y):
 
 
 #-------------------------------------------------------------------------------
-def get_phenotype_df(df, data_path):
+def get_phenotype_df(df, data_path, data_type, season):
     '''
     Get phenotype CSV, either thermal or PS2, from processed data (level_1) data on the CyVerse Data Store. 
     
@@ -195,6 +209,32 @@ def get_phenotype_df(df, data_path):
     '''
 
     pheno_df = pd.read_csv(data_path)
+
+    if data_type == 'PS2':
+
+        geojson_path = download_geojson(season=season)
+        # Open GeoJSON
+        gdf = gpd.read_file(geojson_path).rename(columns={'ID': 'plot'})
+
+        # Open phenotype information
+        pheno_df = pheno_df.drop('Unnamed: 0', axis=1, errors='ignore').rename(columns={'Plot': 'plot'})
+
+        # Ensure column types match
+        gdf['plot'] = gdf['plot'].astype('str').str.zfill(4)
+        pheno_df['plot'] = pheno_df['plot'].astype('str').str.zfill(4)
+
+        # Split the 'center_point' into 'lat' and 'lon'
+        gdf['lon'] = gdf['geometry'].centroid.x
+        gdf['lat'] = gdf['geometry'].centroid.y
+
+        # Extract specific columns
+        gdf = gdf[['plot', 'lon', 'lat']]
+
+        # Convert gdf to pandas dataframe
+        gdf = pd.DataFrame(gdf)
+
+        # Merge gdf and df
+        pheno_df = gdf.merge(pheno_df, on='plot')
 
     # assuming df and pheno_df are pandas dataframes
     df_coords = df[['latitude', 'longitude']].to_numpy()
@@ -581,6 +621,33 @@ def get_vapor_pressure_deficit(air_temp: float, canopy_temp: float, relative_hum
     
     return vpd
 
+
+#-------------------------------------------------------------------------------
+def get_geojson_path(season):
+
+    geojson_dict = {
+        '10': '/iplant/home/shared/phytooracle/season_10_lettuce_yr_2020/level_0/season10_multi_latlon_geno.geojson',
+        '11': '',
+        '12': '',
+        '13': '/iplant/home/shared/phytooracle/season_13_lettuce_yr_2022/level_0/season13_multi_latlon_geno.geojson',
+        '14': '',
+        '15': '/iplant/home/shared/phytooracle/season_15_lettuce_yr_2022/level_0/season15_multi_latlon_geno.geojson',
+        '16': '',
+        '17': ''
+    }
+    
+    return geojson_dict[season]
+
+
+#-------------------------------------------------------------------------------
+def download_geojson(season):
+
+    irods_path = get_geojson_path(season="13")
+    sp.call(f'iget -KPVT {irods_path}', shell=True)
+
+    return os.path.basename(irods_path)
+
+
 #-------------------------------------------------------------------------------
 def main():
     """Make a jazz noise here"""
@@ -601,96 +668,119 @@ def main():
                             season = args.season,
                             level = '0',
                             sensor = args.instrument,
-                            sequence = '%/%.tar.gz',
+                            sequence = '%/%.tar' if args.season=='10' else '%/%.tar.gz',
                             cwd = wd,
                             outdir = args.out_dir)
     os.chdir(wd)
 
     # Find dates for this season
-    path_list = glob.glob(os.path.join(data_path, '*'))
+    # path_list = glob.glob(os.path.join(data_path, '*'))
+    path_list = [path for path in glob.glob(os.path.join(data_path, '*')) if '2222' not in path]
 
     # Iterate through all dates within this season
-    for path in path_list:
-        try:
-            split_path = path.split(os.sep)
-            date_string = split_path[-1]
+    for path in path_list[:1]:
+        # try:
+        # split_path = path.split(os.sep)
+        # date_string = split_path[-1]
+        if args.season == '10':
+            date_string  = re.search(r"\b\d{4}-\d{2}-\d{2}\b", path).group() if re.search(r"\b\d{4}-\d{2}-\d{2}\b", path) else None
+        else:
+            date_string = re.search(r"\b\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}-\d{3}\b", path).group() if re.search(r"\b\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}-\d{3}\b", path) else None
+
+        print(f'Date string: {date_string}')
+
+        if not args.crop == 'NA':
             date_species = '_'.join([date_string, args.crop])
-            date_list = get_env_dates(date_string = date_species)
 
-            # Download Environment Logger data
-            for date in date_list:
+        else:
+            date_species = date_string
 
-                env_path = download_data(
-                                crop = "NA",
-                                season = args.season,
-                                level = '0',
-                                sensor = 'ENV',
-                                sequence = f'{date}.tar.gz',
-                                cwd = wd,
-                                outdir = args.out_dir)
-                
-                os.chdir(wd)
+        date_list = get_env_dates(date_string = date_species)
 
-            # Get gantry metadata
-            meta_df = get_date_position(data_path = os.path.join(data_path, date_string, '*', '*', '*.json'))
+        # Download Environment Logger data
+        for date in date_list:
 
-            # Determining the sequence to use based on specified instrument (sensor) name
-            if args.instrument == 'FLIR':
-
-                sensor_seq = f'{date_species}/%_detect_out.tar'
+            env_path = download_data(
+                            crop = "NA",
+                            season = args.season,
+                            level = '0',
+                            sensor = 'ENV',
+                            sequence = f'{date}.tar.gz',
+                            cwd = wd,
+                            outdir = args.out_dir)
             
-            elif args.instrument == 'PS2':
+            os.chdir(wd)
 
-                sensor_seq = f'{date_species}/%_aggregation_out.tar'
+        # Get gantry metadata
+        meta_df = get_date_position(data_path = os.path.join(data_path, date_string, '*', '*', '*.json'))
 
-            else:
+        # Determining the sequence to use based on specified instrument (sensor) name
+        if args.instrument == 'FLIR':
 
-                raise ValueError(f"Unsupported instrument: {args.instrument}.")
+            sensor_seq = f'{date_species}/%_detect_out.tar'
+        
+        elif args.instrument == 'PS2':
 
-            # Download phenotype data
+            sensor_seq = f'{date_species}/%_aggregation_out.tar'
+
+        else:
+
+            raise ValueError(f"Unsupported instrument: {args.instrument}.")
+
+        # Download phenotype data
+        if args.data_path:
+            csv_path = args.data_path
+        
+        else:
             csv_path = download_data(
                                     crop = args.crop,
                                     season = args.season,
-                                    level = '1',
+                                    level = args.level,
                                     sensor = args.instrument,
                                     sequence = sensor_seq,
                                     cwd = wd,
                                     outdir = args.out_dir)
-            os.chdir(wd)
 
-            # Open phenotype data
-            pheno_df = get_phenotype_df(df = meta_df, data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))[0])
+        os.chdir(wd)
+        print(os.path.join(csv_path, date_string, '*', '*.csv'))
+        # Open phenotype data
+        pheno_df = get_phenotype_df(
+            df = meta_df, 
+            data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))[0], 
+            data_type=args.instrument,
+            season=args.season
+            )
 
-            # Open environmental logger data
-            env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*.json'))
+        # Open environmental logger data
+        env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*.json'))
 
-            # Merge the phenotype and environmental logger dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
-            result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
+        # Merge the phenotype and environmental logger dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
+        result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
 
-            # Calculate additional columns based on instrument (sensor) type
-            if args.instrument == 'FLIR':
+        # Calculate additional columns based on instrument (sensor) type
+        if args.instrument == 'FLIR':
 
-                # Calculate normalized canopy temperature
+            # Calculate normalized canopy temperature
 #                 result['normalized_temp'] = result['median'] - result['temperature']
-                result['canopy_temperature_depression'] = result['temperature'] - result['median']
-    
-                # Calculate vapor pressure deficit.
-                # result['vapor_pressure_deficit'] = get_vapor_pressure_deficit(result['temperature'], result['median'], result['relHumidity'])
-                result['vapor_pressure_deficit'] = result.apply(lambda x: get_vapor_pressure_deficit(x['temperature'], x['median'], x['relHumidity']), axis=1)
+            result['canopy_temperature_depression'] = result['temperature'] - result['median']
 
-            # Drop potentially erroneous column
-            result = result.drop('brightness', axis=1)
+            # Calculate vapor pressure deficit.
+            # result['vapor_pressure_deficit'] = get_vapor_pressure_deficit(result['temperature'], result['median'], result['relHumidity'])
+            result['vapor_pressure_deficit'] = result.apply(lambda x: get_vapor_pressure_deficit(x['temperature'], x['median'], x['relHumidity']), axis=1)
 
-            # Save CSV to defined output directory
-            result.to_csv(os.path.join(args.out_dir, '_'.join([date_species, 'environmental_association.csv'])), index=False)
+        # Drop potentially erroneous column
+        result = result.drop('brightness', axis=1)
 
-            # Clean up input data
-            shutil.rmtree(env_path)
-            #shutil.rmtree(data_path)
+        # Save CSV to defined output directory
+        result.to_csv(os.path.join(args.out_dir, '_'.join([date_species, 'environmental_association.csv'])), index=False)
 
-        except:
-            print(f"An error occurred while processing path: {path}. Continuing with next path.")
-            shutil.rmtree(env_path)
+        # Clean up input data
+        shutil.rmtree(env_path)
+        #shutil.rmtree(data_path)
+
+        # except:
+        #     print(f"An error occurred while processing path: {path}. Continuing with next path.")
+        #     shutil.rmtree(env_path)
 
 
 # --------------------------------------------------
