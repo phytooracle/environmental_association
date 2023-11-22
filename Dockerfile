@@ -57,7 +57,7 @@ RUN pip3 install cython
 RUN pip3 install --upgrade cython
 RUN pip3 install setuptools==57.5.0
 RUN pip3 install GDAL==3.0.4
-RUN pip3 install -r /opt/requirements.txt
+RUN pip3 install --no-cache-dir -r /opt/requirements.txt
 
 RUN wget http://download.osgeo.org/libspatialindex/spatialindex-src-1.7.1.tar.gz
 RUN tar -xvf spatialindex-src-1.7.1.tar.gz
@@ -83,11 +83,14 @@ RUN apt-get update -y \
     && apt-get upgrade -y
 
 RUN wget -c \
-    http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
+    # http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
+    http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.20_amd64.deb
 RUN apt-get install -y \
-    ./libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
+    # ./libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
+    ./libssl1.1_1.1.1f-1ubuntu2.20_amd64.deb
 RUN rm -rf \
-    ./libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
+    # ./libssl1.1_1.1.1f-1ubuntu2.19_amd64.deb
+    ./libssl1.1_1.1.1f-1ubuntu2.20_amd64.deb
 
 # RUN wget https://files.renci.org/pub/irods/releases/4.1.10/ubuntu14/irods-icommands-4.1.10-ubuntu14-x86_64.deb \
 #     && apt-get install -y ./irods-icommands-4.1.10-ubuntu14-x86_64.deb
