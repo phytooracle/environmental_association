@@ -627,12 +627,12 @@ def get_geojson_path(season):
 
     geojson_dict = {
         '10': '/iplant/home/shared/phytooracle/season_10_lettuce_yr_2020/level_0/season10_multi_latlon_geno.geojson',
-        '11': '',
-        '12': '',
+        '11': '/iplant/home/shared/phytooracle/season_11_sorghum_yr_2020/level_0/season11_multi_latlon_geno.geojson',
+        '12': '/iplant/home/shared/phytooracle/season_12_sorghum_soybean_sunflower_tepary_yr_2021/level_0/season12_multi_latlon_geno_updated.geojson',
         '13': '/iplant/home/shared/phytooracle/season_13_lettuce_yr_2022/level_0/season13_multi_latlon_geno.geojson',
-        '14': '',
+        '14': '/iplant/home/shared/phytooracle/season_14_sorghum_yr_2022/level_0/season14_multi_latlon_geno_correction_labeled.geojson',
         '15': '/iplant/home/shared/phytooracle/season_15_lettuce_yr_2022/level_0/season15_multi_latlon_geno.geojson',
-        '16': '',
+        '16': '/iplant/home/shared/phytooracle/season_16_sorghum_yr_2023/level_0/season16_multi_latlon_geno_updated.geojson',
         '17': ''
     }
     
@@ -642,7 +642,7 @@ def get_geojson_path(season):
 #-------------------------------------------------------------------------------
 def download_geojson(season):
 
-    irods_path = get_geojson_path(season="13")
+    irods_path = get_geojson_path(season=season)
     sp.call(f'iget -KPVT {irods_path}', shell=True)
 
     return os.path.basename(irods_path)
