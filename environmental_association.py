@@ -209,12 +209,14 @@ def get_phenotype_df(df, data_path, data_type, season):
     '''
 
     pheno_df = pd.read_csv(data_path)
+    # print(pheno_df)
 
     if data_type == 'PS2':
 
         geojson_path = download_geojson(season=season)
         # Open GeoJSON
         gdf = gpd.read_file(geojson_path).rename(columns={'ID': 'plot'})
+        # print(gdf)
 
         # Open phenotype information
         pheno_df = pheno_df.drop('Unnamed: 0', axis=1, errors='ignore').rename(columns={'Plot': 'plot'})
@@ -473,7 +475,7 @@ def download_files(item, out_path):
 
         
 #-------------------------------------------------------------------------------
-def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=True):
+def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=True, download_first=False):
     '''
     Recursively runs `download_files` to download all data into a single output directory specified by the user.
     
@@ -510,6 +512,9 @@ def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=T
 
         if download:
             os.chdir(out_path)
+
+            if download_first:
+                files = files[:1]
 
             # Download files.
             for item in files: 
@@ -671,6 +676,7 @@ def main():
                             sequence = '%/%.tar' if args.season=='10' else '%/%.tar.gz',
                             cwd = wd,
                             outdir = args.out_dir)
+                            # download_first=True)
     os.chdir(wd)
 
     # Find dates for this season
@@ -710,10 +716,10 @@ def main():
                                 outdir = args.out_dir)
                 
                 os.chdir(wd)
-
+            print(f'Date string: {date_string}')
             # Get gantry metadata
-            meta_df = get_date_position(data_path = os.path.join(data_path, date_string, '*', '*', '*.json'))
-
+            meta_df = get_date_position(data_path = os.path.join(data_path, date_string, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(data_path, date_string, '*', '*', '*.json'))
+    
             # Determining the sequence to use based on specified instrument (sensor) name
             if args.instrument == 'FLIR':
 
@@ -742,7 +748,7 @@ def main():
                                         outdir = args.out_dir)
 
             os.chdir(wd)
-            print(os.path.join(csv_path, date_string, '*', '*.csv'))
+            print(meta_df)
             # Open phenotype data
             pheno_df = get_phenotype_df(
                 df = meta_df, 
@@ -752,7 +758,8 @@ def main():
                 )
 
             # Open environmental logger data
-            env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*.json'))
+            print(env_path)
+            env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
 
             # Merge the phenotype and environmental logger dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
             result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
