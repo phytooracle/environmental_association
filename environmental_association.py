@@ -215,11 +215,12 @@ def get_phenotype_df(df, data_path, data_type, season):
 
         geojson_path = download_geojson(season=season)
         # Open GeoJSON
-        gdf = gpd.read_file(geojson_path).rename(columns={'ID': 'plot'})
-        # print(gdf)
+        gdf = gpd.read_file(geojson_path).drop('plot', axis=1, errors='ignore').rename(columns={'ID': 'plot'})
+        print(gdf)
 
         # Open phenotype information
         pheno_df = pheno_df.drop('Unnamed: 0', axis=1, errors='ignore').rename(columns={'Plot': 'plot'})
+        print(pheno_df)
 
         # Ensure column types match
         gdf['plot'] = gdf['plot'].astype('str').str.zfill(4)
@@ -366,8 +367,9 @@ def get_dict():
             '11': 'season_11_sorghum_yr_2020',
             '12': 'season_12_sorghum_soybean_sunflower_tepary_yr_2021',
             '13': 'season_13_lettuce_yr_2022',
-            '14': 'season_14_sorghum_yr_2022',
-            '15': 'season_15_lettuce_yr_2022'
+            '14': 'season_14_sorghum_yr_2022_reprocessing',
+            '15': 'season_15_lettuce_yr_2022',
+            '16': 'season_16_sorghum_yr_2023'
         },
 
         'level': {
@@ -635,9 +637,9 @@ def get_geojson_path(season):
         '11': '/iplant/home/shared/phytooracle/season_11_sorghum_yr_2020/level_0/season11_multi_latlon_geno.geojson',
         '12': '/iplant/home/shared/phytooracle/season_12_sorghum_soybean_sunflower_tepary_yr_2021/level_0/season12_multi_latlon_geno_updated.geojson',
         '13': '/iplant/home/shared/phytooracle/season_13_lettuce_yr_2022/level_0/season13_multi_latlon_geno.geojson',
-        '14': '/iplant/home/shared/phytooracle/season_14_sorghum_yr_2022/level_0/season14_multi_latlon_geno_correction_labeled.geojson',
+        '14': '/iplant/home/shared/phytooracle/season_14_sorghum_yr_2022_reprocessing/level_0/season14_multi_latlon_geno_correction_labeled.geojson', #'/iplant/home/shared/phytooracle/season_14_sorghum_yr_2022/level_0/season14_multi_latlon_geno_correction_labeled.geojson',
         '15': '/iplant/home/shared/phytooracle/season_15_lettuce_yr_2022/level_0/season15_multi_latlon_geno.geojson',
-        '16': '/iplant/home/shared/phytooracle/season_16_sorghum_yr_2023/level_0/season16_multi_latlon_geno_updated.geojson',
+        '16': '/iplant/home/shared/phytooracle/season_16_sorghum_yr_2023/level_0/season16_multi_latlon_geno_correction_relabeled.geojson', #'/iplant/home/shared/phytooracle/season_16_sorghum_yr_2023/level_0/season16_multi_latlon_geno_updated.geojson',
         '17': ''
     }
     
@@ -758,9 +760,9 @@ def main():
                 )
 
             # Open environmental logger data
-            print(env_path)
+            print(pheno_df)
             env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
-
+            print(env_df)
             # Merge the phenotype and environmental logger dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
             result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
 
