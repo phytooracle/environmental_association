@@ -27,12 +27,19 @@ Command Line Arguments:
 
 * Season during which data were collected (-s, --season)
   * Required: True
-  * Choices: 10, 11, 12, 13, 14, 15, 16
+  * Choices: 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
 
 * Crop name of data to download (-c, --crop)
   * Required: True
-  * Choices: sorghum, lettuce
+  * Choices: sorghum, lettuce, cotton, soybean, sunflower, tepary, NA
+
+* Data level to download. Choices are 0, 1, 2, 3, or 4. (-lev, --level)
+  * Default: 1
 
 * Instrument (sensor) used to collect phenotype data (-i, --instrument)
   * Required: True
   * Choices: FLIR, PS2
+
+* Path to directory containing CSVv files (-d, --data_path)
+
+* Add flag if using level_2 FlirIrCamera plot-level data instead of level_1 individual detection data. (-p, --plot_level)
