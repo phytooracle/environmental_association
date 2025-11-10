@@ -106,4 +106,6 @@ RUN echo "{ \"irods_zone_name\": \"iplant\", \"irods_host\": \"data.cyverse.org\
 RUN apt-get autoremove -y
 RUN apt-get clean
 
+ENV PYTHONPATH=/usr/local/lib/python3.7/site-packages:$PYTHONPATH
+
 ENTRYPOINT [ "/usr/local/bin/python3.7", "/opt/environmental_association.py" ]
