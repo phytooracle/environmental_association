@@ -78,6 +78,9 @@ RUN wget http://download.osgeo.org/gdal/3.0.4/gdal-3.0.4.tar.gz && \
 ENV CPLUS_INCLUDE_PATH=/usr/local/include
 ENV C_INCLUDE_PATH=/usr/local/include
 
+# Install additional Python packages
+RUN pip3 install --no-cache-dir -r /opt/requirements.txt
+
 # Install iRODS
 ARG PY_UR='python3-urllib3_1.26.9-1_all.deb'
 ARG LI_SS='libssl1.1_1.1.1f-1ubuntu2.16_amd64.deb'
