@@ -72,6 +72,13 @@ def get_args():
                         '--plot_level',
                         help='Add flag if using level_2 FlirIrCamera plot-level data instead of level_1 individual detection data.',
                         action='store_true')
+                
+    parser.add_argument('-w',
+                        '--weather',
+                        help='Which weather station to use (AZMET, gantry_original)',
+                        type=str,
+                        choices=['azmet', 'gantry_original'],
+                        required=True)
 
     return parser.parse_args()
 
@@ -448,6 +455,64 @@ def get_file_list(data_path, sequence):
 
 
 #-------------------------------------------------------------------------------
+def download_azmet_rh(date_or_year: str):
+    """
+    Download AZMET raw hourly 'rh.txt' file for station 06 (Maricopa) based on the provided date/year string.
+    - Accepts 'yyyy' or 'yyyy-MM-dd' and extracts the year.
+    - Uses current path logic for years >= 2023; legacy logic otherwise.
+    - Always saves to the current working directory as 'azmet_06<YY>_rh.txt'.
+    - Uses wget via subprocess; raises RuntimeError on failure.
+
+    Returns:
+        Path: The resolved path to the downloaded file in the current directory.
+    """
+    # Extract year from 'yyyy' or 'yyyy-MM-dd'
+    year = date_or_year[:4]
+    try:
+        yr_num = int(year)
+    except ValueError:
+        raise ValueError(f"Invalid year/date string: {date_or_year!r}. Expected 'yyyy' or 'yyyy-MM-dd'.")
+
+    yy = year[-2:]  # last two digits
+    filename = f"azmet_06{yy}_rh.txt"
+    out_path = os.getcwd() / filename
+
+    # Path logic (per your spec: only the base differs)
+    if yr_num >= 2023:
+        url_base = "https://azmet.arizona.edu/azmet/data/06"
+    else:
+        if yr_num < 2003:
+            raise ValueError("This application does not support AZMET data for years before 2003.")
+        else:
+            url_base = "https://cales.arizona.edu/azmet/data/06"  # legacy base
+
+    url = f"{url_base}{yy}rh.txt"  # e.g., https://.../0625rh.txt
+
+    # Build wget command (quiet + retries + timeout)
+    cmd = [
+        "wget",
+        "-O", str(out_path),
+        "-q",              # quiet; remove this flag to see progress
+        "--tries=3",
+        "--timeout=30",
+        url,
+    ]
+
+    try:
+        sp.run(cmd, check=True, capture_output=True, text=True)
+        return out_path.resolve()
+    except FileNotFoundError:
+        raise RuntimeError("wget not found on PATH. Please install wget and try again.")
+    except sp.CalledProcessError as e:
+        stderr = e.stderr or ""
+        raise RuntimeError(
+            f"wget failed (exit code {e.returncode}).\n"
+            f"URL: {url}\n"
+            f"STDERR: {stderr}"
+        )
+
+
+#-------------------------------------------------------------------------------
 def download_files(item, out_path):
     '''
     Uses iRODS to access the CyVerse Data Store. The function downloads data and extracts contents from ".tar" and "tar.gz" files if applicable.
@@ -693,17 +758,25 @@ def main():
 
             date_list = get_env_dates(date_string = date_species)
 
-            # Download Environment Logger data
-            for date in date_list:
-                env_path = download_data(
-                                crop = "NA",
-                                season = args.season,
-                                level = '0',
-                                sensor = 'ENV',
-                                sequence = f'{date}.tar.gz',
-                                cwd = wd,
-                                outdir = args.out_dir)
-                os.chdir(wd)
+            # Download weather data
+            if args.weather == 'gantry_original':
+                for date in date_list:
+                    env_path = download_data(
+                                    crop = "NA",
+                                    season = args.season,
+                                    level = '0',
+                                    sensor = 'ENV',
+                                    sequence = f'{date}.tar.gz',
+                                    cwd = wd,
+                                    outdir = args.out_dir)
+            elif args.weather == 'azmet':
+                print('Downloading AZMET data - placeholder')
+                # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMET hourly data
+                azmet_data = download_azmet_rh(date_species)
+            else:
+                raise ValueError(f"Unsupported weather station: {args.weather}.")
+            
+            os.chdir(wd)
             
             print(f'Date string: {date_string}')
 
@@ -740,7 +813,6 @@ def main():
 
             # Open phenotype data
             if args.plot_level:
-                print('placeholder')
                 pheno_df  = get_phenotype_df_plot(
                     df = meta_df, 
                     data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*plot_thresholding_results.csv'))[0]
@@ -754,13 +826,36 @@ def main():
                     crop=args.crop
                     )
 
-            # Open environmental logger data
+            # Open weather data
             print(pheno_df)
 
-            env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
+            if args.weather == "gantry_original":
+                env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
+            elif args.weather == "azmet":
+                print("AZMET phenotype data processing not yet implemented.")
+                env_df = pd.read_csv(
+                    azmet_data,
+                    sep=",",           # or sep=";", sep="\t"
+                    comment="#",
+                    na_values=["NA", "NaN", "-999", "-99"],
+                    header=None,                # no header in file
+                    names=["year", "day_of_year", "hour_of_day", "temperature", "relHumidity", "vapor_pressure_deficit_azmet", 
+                           "solar_radiation", "precipitation", "4in_soil_temperature", "20in_soil_temperature", "wind_speeg_avg", 
+                           "wind_vector_magnitude", "wind_vector_direction", "wind_direction_stdev", "wind_speed_max", 
+                           "reference_evapotranspiration_Eto", "actual_vapor_pressure", "dewpoint_hourly_avg"],
+                )
+                # Add in a time column to more closely match with gantry data
+                env_df["time"] = (
+                    pd.to_datetime(env_df["year"], format="%Y")                # Jan 1 of year
+                    + pd.to_timedelta(env_df["day_of_year"] - 1, unit="D")     # add DOY offset
+                    + pd.to_timedelta(env_df["hour_of_day"] % 24, unit="h")    # hour (24 → 0)
+                    + pd.to_timedelta((env_df["hour_of_day"] == 24).astype(int), unit="D")  # rollover day if hour=24
+                )
+            else:
+                raise ValueError(f"Unsupported weather station: {args.weather}.")
             print(env_df)
 
-            # Merge the phenotype and environmental logger dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
+            # Merge the phenotype and weather dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
             result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
 
             # Calculate additional columns based on instrument (sensor) type
@@ -772,14 +867,15 @@ def main():
                     result['canopy_temperature_depression'] = result['temperature'] - result['median']
                     result['vapor_pressure_deficit'] = result.apply(lambda x: get_vapor_pressure_deficit(x['temperature'], x['median'], x['relHumidity']), axis=1)
 
-            # Drop potentially erroneous column
-            result = result.drop('brightness', axis=1)
+            # Drop potentially erroneous column from gantry_original weather station
+            if args.weather == 'gantry_original' and 'brightness' in result.columns:
+                result = result.drop('brightness', axis=1)
 
             # Save CSV to defined output directory
-            if args.plot_level:
-                result.to_csv(os.path.join(args.out_dir, '_'.join([date_species, args.instrument, 'plot_level_environmental_association.csv'])), index=False)
-            else:
-                result.to_csv(os.path.join(args.out_dir, '_'.join([date_species, args.instrument, 'environmental_association.csv'])), index=False)
+            base_name = '_'.join([date_species, args.instrument, args.weather])
+            suffix = 'plot_level_environmental_association.csv' if args.plot_level else 'individual_level_environmental_association.csv'
+            out_path = os.path.join(args.out_dir, f'{base_name}_{suffix}')
+            result.to_csv(out_path, index=False)
 
             # Clean up input data
             shutil.rmtree(env_path)
