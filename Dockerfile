@@ -8,7 +8,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG PYTHON_VERSION=3.7.1
 
 # Update and install dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update --fix-missing && apt-get install -y \
     wget \
     libspatialindex-dev \
     build-essential \

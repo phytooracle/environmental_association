@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 import re
 import subprocess as sp
 import shutil
+import shlex
 import math
 import geopandas as gpd
 
@@ -75,10 +76,14 @@ def get_args():
                 
     parser.add_argument('-w',
                         '--weather',
-                        help='Which weather station to use (AZMET, gantry_original)',
+                        help='Which weather station to use (AZMET, gantry_new)',
                         type=str,
-                        choices=['azmet', 'gantry_original'],
+                        choices=['azmet', 'gantry_original', 'gantry_new'],
                         required=True)
+    
+    parser.add_argument('--nodownload',
+                        help='Add flag to skip downloading sensor data in case it is already present.',
+                        action='store_true')
 
     return parser.parse_args()
 
@@ -429,7 +434,8 @@ def get_dict():
             'PS2': 'ps2Top',
             'RGB': 'stereoTop',
             '3D': 'scanner3DTop',
-            'ENV': 'EnvironmentLogger'
+            'ENV': 'EnvironmentLogger',
+            'MET': 'MeteorologicalSensor'
         }
     }
 
@@ -450,6 +456,9 @@ def get_file_list(data_path, sequence):
     '''
     result = sp.run(f'ilocate {os.path.join(data_path, "%", f"{sequence}")}', stdout=sp.PIPE, shell=True)
     files = result.stdout.decode('utf-8').split('\n')
+
+    # Filter out ilocate errors and empty lines
+    files = [f for f in files if f and not f.strip().startswith("ERROR:")]
 
     return files
 
@@ -475,7 +484,7 @@ def download_azmet_rh(date_or_year: str):
 
     yy = year[-2:]  # last two digits
     filename = f"azmet_06{yy}_rh.txt"
-    out_path = os.getcwd() / filename
+    out_path = os.path.join(os.getcwd(), filename)
 
     # Path logic (per your spec: only the base differs)
     if yr_num >= 2023:
@@ -500,7 +509,7 @@ def download_azmet_rh(date_or_year: str):
 
     try:
         sp.run(cmd, check=True, capture_output=True, text=True)
-        return out_path.resolve()
+        return out_path
     except FileNotFoundError:
         raise RuntimeError("wget not found on PATH. Please install wget and try again.")
     except sp.CalledProcessError as e:
@@ -526,53 +535,77 @@ def download_files(item, out_path):
         
     os.chdir(out_path)
 
-    if not 'deprecated' in item:
+    if not item or item.strip().startswith("ERROR:"):
+        print(f"Skipping invalid item: {item}")
+        return
+    
+    if 'dep' in item:
+        print(f"Skipping deprecated item: {item}")
+        return
 
+    try:
+        item = os.path.normpath(item)
+
+        # Extract date string from item path (two formats supported)
         try:
-            item = os.path.normpath(item)
+            match_str = re.search(r'\d{4}\-\d{2}\-\d{2}\_\_\d{2}\-\d{2}\-\d{2}\-\d{3}', item)
+            date = match_str.group()
+        except Exception:
+            match_str = re.search(r'\d{4}\-\d{2}\-\d{2}', item)
+            date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
+        date = str(date)
 
-            try:
+        print(f"Found item {item}.")
+        if not os.path.isdir(date):
+            print(f"Making directory {date}.")
+            os.makedirs(date)
 
-                match_str = re.search(r'\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}-\d{3}', item)
-                date = match_str.group()
-                # date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
-            except:
-                match_str = re.search(r'\d{4}-\d{2}-\d{2}', item)
-                date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
-                date = str(date)
+        # Shell-safe quoting
+        q_item = shlex.quote(os.path.basename(item))  # archive name after iget
+        q_irods_item = shlex.quote(item)              # full iRODS source path
+        q_date = shlex.quote(date)
 
-            print(f"Found item {item}.")
+        if '.tar.gz' in item:
+            print(f"Downloading {item}.")
+            ret = sp.call(f'iget -KPVT {q_irods_item}', shell=True)
+            if ret != 0:
+                print(f"iget failed for {item} (ret={ret}); skipping.")
+                return
 
-            if not os.path.isdir(date):
-                print(f"Making directory {date}.")
-                os.makedirs(date)
+            print(f"Extracting {item}.")
+            ret = sp.call(f'tar -xzvf {q_item} -C {q_date}', shell=True)
+            if ret != 0:
+                print(f"Reattempting to extract {item} without -z.")
+                ret2 = sp.call(f'tar -xvf {q_item} -C {q_date}', shell=True)
+                if ret2 != 0:
+                    print(f"Extraction failed for {item}; skipping.")
+            sp.call(f'rm -f {q_item}', shell=True)
 
-            if '.tar.gz' in item: 
-                print(f"Downloading {item}.")
-                sp.call(f'iget -KPVT {item}', shell=True)
+        elif '.tar' in item:
+            print(f"Downloading {item}.")
+            ret = sp.call(f'iget -KPVT {q_irods_item}', shell=True)
+            if ret != 0:
+                print(f"iget failed for {item} (ret={ret}); skipping.")
+                return
 
-                print(f"Extracting {item}.")
-                ret = sp.call(f'tar -xzvf {os.path.basename(item)} -C {date}', shell=True)
-                # ret = sp.call(f'tar -c --use-compress-program=pigz -f {os.path.basename(item)}', shell=True) #-C {date} 
+            print(f"Extracting {item}.")
+            ret = sp.call(f'tar -xvf {q_item} -C {q_date}', shell=True)
+            if ret != 0:
+                print(f"Extraction failed for {item}; skipping.")
+            sp.call(f'rm -f {q_item}', shell=True)
 
-                if ret != 0:
-                    print(f"Reattempting to extract {item}.")
-                    sp.call(f'tar -xvf {os.path.basename(item)} -C {date}', shell=True)
+        else:
+            # Non-archive: download directly into the date folder
+            os.chdir(date)
+            ret = sp.call(f'iget -KPVT {q_irods_item}', shell=True)
+            if ret != 0:
+                print(f"iget failed for {item} (ret={ret}); skipping.")
+                return
 
-                sp.call(f'rm {os.path.basename(item)}', shell=True)
-            elif '.tar' in item:
-                print(f"Downloading {item}.")
-                sp.call(f'iget -KPVT {item}', shell=True)
-                
-                print(f"Extracting {item}.")
-                sp.call(f'tar -xvf {os.path.basename(item)} -C {date}', shell=True)
-                sp.call(f'rm {os.path.basename(item)}', shell=True)
-            else:
-                os.chdir(date)
-                sp.call(f'iget -KPVT {item}', shell=True)
-            
-        except:
-            pass
+    except Exception as e:
+        # Don’t crash the whole run; just log and continue
+        print(f"Failure during download_files for {item}: {e}")
+
 
         
 #-------------------------------------------------------------------------------
@@ -728,14 +761,18 @@ def main():
     wd = os.getcwd()
 
     # Download sensor data
-    data_path = download_data(
-                            crop = "NA",
-                            season = args.season,
-                            level = '0',
-                            sensor = args.instrument,
-                            sequence = '%/%.tar' if args.season=='10' else '%/%.tar.gz',
-                            cwd = wd,
-                            outdir = args.out_dir)
+    if args.nodownload:
+        irods_dict = get_dict()
+        data_path = os.path.join(args.out_dir, irods_dict['season'][args.season], irods_dict['sensor'][args.instrument])
+    else: 
+        data_path = download_data(
+                                crop = "NA",
+                                season = args.season,
+                                level = '0',
+                                sensor = args.instrument,
+                                sequence = '%/%.tar' if args.season=='10' else '%/%.tar.gz',
+                                cwd = wd,
+                                outdir = args.out_dir)
     os.chdir(wd)
 
     # Find dates for this season
@@ -770,15 +807,23 @@ def main():
                                     cwd = wd,
                                     outdir = args.out_dir)
             elif args.weather == 'azmet':
-                print('Downloading AZMET data - placeholder')
+                print('Downloading AZMET data')
                 # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMET hourly data
                 azmet_data = download_azmet_rh(date_species)
+            elif args.weather == 'gantry_new':
+                for date in date_list:
+                    env_path = download_data(
+                                    crop = args.crop,
+                                    season = args.season,
+                                    level = '2',
+                                    sensor = 'MET',
+                                    sequence = f"all_sensors_long_merged.csv",
+                                    cwd = wd,
+                                    outdir = args.out_dir)
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
             
             os.chdir(wd)
-            
-            print(f'Date string: {date_string}')
 
             # Get gantry metadata
             meta_df = get_date_position(data_path = os.path.join(data_path, date_string, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(data_path, date_string, '*', '*', '*.json'))
@@ -813,14 +858,22 @@ def main():
 
             # Open phenotype data
             if args.plot_level:
-                pheno_df  = get_phenotype_df_plot(
-                    df = meta_df, 
-                    data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*plot_thresholding_results.csv'))[0]
+                candidates = glob.glob(os.path.join(csv_path, date_string, '*', '*plot_thresholding_results.csv'))
+                if not candidates:
+                    print(f"No plot_thresholding_results.csv found for {date_string}; skipping this date.")
+                    continue
+                pheno_df = get_phenotype_df_plot(
+                    df=meta_df, 
+                    data_path=candidates[0]
                     )
             else:
+                candidates = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))
+                if not candidates:
+                    print(f"No csv found for {date_string}; skipping this date.")
+                    continue
                 pheno_df = get_phenotype_df(
                     df = meta_df, 
-                    data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))[0], 
+                    data_path = candidates[0], 
                     data_type=args.instrument,
                     season=args.season,
                     crop=args.crop
@@ -832,7 +885,6 @@ def main():
             if args.weather == "gantry_original":
                 env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
             elif args.weather == "azmet":
-                print("AZMET phenotype data processing not yet implemented.")
                 env_df = pd.read_csv(
                     azmet_data,
                     sep=",",           # or sep=";", sep="\t"
@@ -851,6 +903,27 @@ def main():
                     + pd.to_timedelta(env_df["hour_of_day"] % 24, unit="h")    # hour (24 → 0)
                     + pd.to_timedelta((env_df["hour_of_day"] == 24).astype(int), unit="D")  # rollover day if hour=24
                 )
+            elif args.weather == 'gantry_new': 
+                env_df = pd.read_csv(
+                    env_path,
+                    sep=",",           # or sep=";", sep="\t"
+                    comment="#",
+                    na_values=["NA", "NaN", "-999", "-99"],
+                    header=None,                # no header in file
+                    names=["plot_id", "sensor_type", "tarball_name", "meta_date", "meta_time", "meta_crop", "name", "date", 
+                    "date_int", "tension", "value", "timestamp", "solar_flux_density", "precipitation", "number_lightnings", 
+                    "lightning_distance", "wind_speed", "wind_direction", "max_wind_speed", "air_temperature", 
+                    "absolute_pressure", "relative_humidity", "relative_humidity_sensor_temperature", 
+                    "NS_tilt_angle", "EW_tilt_angle"]
+                )
+                # Add in a time column to more closely match with gantry data
+                env_df["time"] = (
+                    pd.to_datetime(env_df['timestamp'], format="%Y.%m.%d-%H:%M:%S", errors="coerce")
+                    .dt.tz_localize("UTC")
+                    .dt.tz_convert("America/Phoenix")
+                )
+                # Rename some columns to match the original gantry data for consistency
+                env_df = env_df.rename(columns={"air_temperature": "temperature", "relative_humidity": "relHumidity"})
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
             print(env_df)
@@ -880,9 +953,13 @@ def main():
             # Clean up input data
             shutil.rmtree(env_path)
 
-        except:
-            print(f"An error occurred while processing path: {path}. Continuing with next path.")
-            shutil.rmtree(env_path)
+        except Exception as e:
+            print(f"An error occurred while processing path: {path}: {e}. Continuing with next path.")
+            try:
+                if 'env_path' in locals() and env_path and os.path.isdir(env_path):
+                    shutil.rmtree(env_path)
+            except Exception as ce:
+                print(f"Cleanup skipped or failed for {env_path}: {ce}")
 
 
 # --------------------------------------------------
