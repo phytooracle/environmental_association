@@ -43,3 +43,7 @@ Command Line Arguments:
 * Path to directory containing CSVv files (-d, --data_path)
 
 * Add flag if using level_2 FlirIrCamera plot-level data instead of level_1 individual detection data. (-p, --plot_level)
+
+* Weather Station (-w, --weather)
+  * Required: True
+  * Choices: 'AZMet', 'EnvironmentLogger', 'MeteorologicalSensor'

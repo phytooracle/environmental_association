@@ -76,9 +76,9 @@ def get_args():
                 
     parser.add_argument('-w',
                         '--weather',
-                        help='Which weather station to use (AZMET, gantry_new)',
+                        help='Which weather station to use (AZMet, EnvironmentLogger, MeteorologicalSensor)',
                         type=str,
-                        choices=['azmet', 'gantry_original', 'gantry_new'],
+                        choices=['AZMet', 'EnvironmentLogger', 'MeteorologicalSensor'],
                         required=True)
     
     parser.add_argument('--nodownload',
@@ -464,9 +464,9 @@ def get_file_list(data_path, sequence):
 
 
 #-------------------------------------------------------------------------------
-def download_azmet_rh(date_or_year: str):
+def download_AZMet_rh(date_or_year: str):
     """
-    Download AZMET raw hourly 'rh.txt' file for station 06 (Maricopa) based on the provided date/year string.
+    Download AZMet raw hourly 'rh.txt' file for station 06 (Maricopa) based on the provided date/year string.
     - Accepts 'yyyy' or 'yyyy-MM-dd' and extracts the year.
     - Uses current path logic for years >= 2023; legacy logic otherwise.
     - Always saves to the current working directory as 'azmet_06<YY>_rh.txt'.
@@ -491,7 +491,7 @@ def download_azmet_rh(date_or_year: str):
         url_base = "https://azmet.arizona.edu/azmet/data/06"
     else:
         if yr_num < 2003:
-            raise ValueError("This application does not support AZMET data for years before 2003.")
+            raise ValueError("This application does not support AZMet data for years before 2003.")
         else:
             url_base = "https://cales.arizona.edu/azmet/data/06"  # legacy base
 
@@ -523,7 +523,7 @@ def download_azmet_rh(date_or_year: str):
 
 #-------------------------------------------------------------------------------
 
-def download_gantry_new_csv(season: str, crop: str, out_dir: str, skip_download: bool = False) -> str:
+def download_MeteorologicalSensor_csv(season: str, crop: str, out_dir: str, skip_download: bool = False) -> str:
     irods_dict = get_dict()
     out_base = os.path.join(out_dir, irods_dict['season'][season], irods_dict['sensor']['MET'])
     os.makedirs(out_base, exist_ok=True)
@@ -531,7 +531,7 @@ def download_gantry_new_csv(season: str, crop: str, out_dir: str, skip_download:
     # Check if file already exists
     existing = glob.glob(os.path.join(out_base, "**", "all_sensors_long_merged.csv"), recursive=True)
     if existing:
-        print(f"Using existing gantry_new CSV: {existing[0]}")
+        print(f"Using existing MeteorologicalSensor CSV: {existing[0]}")
         return existing[0]
 
     if skip_download:
@@ -548,14 +548,14 @@ def download_gantry_new_csv(season: str, crop: str, out_dir: str, skip_download:
     sequence = "all_sensors_long_merged.csv"
     files = get_file_list(data_path, sequence)
     if not files:
-        raise FileNotFoundError(f"No gantry_new file found for season {season}, crop {crop}")
+        raise FileNotFoundError(f"No MeteorologicalSensor file found for season {season}, crop {crop}")
 
     download_files(item=files[0], out_path=out_base)
 
     # Locate the file after download
     candidates = glob.glob(os.path.join(out_base, "**", sequence), recursive=True)
     if not candidates:
-        raise FileNotFoundError(f"Downloaded gantry_new file not found under {out_base}")
+        raise FileNotFoundError(f"Downloaded MeteorologicalSensor file not found under {out_base}")
     return candidates[0]
 
 
@@ -830,10 +830,10 @@ def main():
     # Find dates for this season
     path_list = [path for path in glob.glob(os.path.join(data_path, '*')) if '2222' not in path]
 
-    # Handle gantry_new station
-    gantry_new_csv_path = None
-    if args.weather == 'gantry_new':
-        gantry_new_csv_path = download_gantry_new_csv(
+    # Handle MeteorologicalSensor station
+    MeteorologicalSensor_csv_path = None
+    if args.weather == 'MeteorologicalSensor':
+        MeteorologicalSensor_csv_path = download_MeteorologicalSensor_csv(
             season=args.season,
             crop=args.crop,
             out_dir=args.out_dir
@@ -858,7 +858,7 @@ def main():
             date_list = get_env_dates(date_string = date_species)
 
             # Download weather data
-            if args.weather == 'gantry_original':
+            if args.weather == 'EnvironmentLogger':
                 for date in date_list:
                     env_path = download_data(
                                     crop = "NA",
@@ -868,12 +868,12 @@ def main():
                                     sequence = f'{date}.tar.gz',
                                     cwd = wd,
                                     outdir = args.out_dir)
-            elif args.weather == 'azmet':
-                print('Downloading AZMET data')
-                # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMET hourly data
-                azmet_data = download_azmet_rh(date_species)
-            elif args.weather == 'gantry_new':
-                env_path = gantry_new_csv_path
+            elif args.weather == 'AZMet':
+                print('Downloading AZMet data')
+                # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMet hourly data
+                AZMet_data = download_AZMet_rh(date_species)
+            elif args.weather == 'MeteorologicalSensor':
+                env_path = MeteorologicalSensor_csv_path
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
             
@@ -936,11 +936,11 @@ def main():
             # Open weather data
             #print(pheno_df)
 
-            if args.weather == "gantry_original":
+            if args.weather == "EnvironmentLogger":
                 env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
-            elif args.weather == "azmet":
+            elif args.weather == "AZMet":
                 env_df = pd.read_csv(
-                    azmet_data,
+                    AZMet_data,
                     sep=",",           # or sep=";", sep="\t"
                     comment="#",
                     na_values=["NA", "NaN", "-999", "-99"],
@@ -957,7 +957,7 @@ def main():
                     + pd.to_timedelta(env_df["hour_of_day"] % 24, unit="h")    # hour (24 → 0)
                     + pd.to_timedelta((env_df["hour_of_day"] == 24).astype(int), unit="D")  # rollover day if hour=24
                 )
-            elif args.weather == 'gantry_new': 
+            elif args.weather == 'MeteorologicalSensor': 
                 env_df = pd.read_csv(
                     env_path,
                     header=0,
@@ -969,7 +969,7 @@ def main():
                 missing_cols = required_cols - set(env_df.columns)
                 if missing_cols:
                     raise RuntimeError(
-                        f"gantry_new CSV missing required columns: {missing_cols}. "
+                        f"MeteorologicalSensor CSV missing required columns: {missing_cols}. "
                         f"Columns present: {list(env_df.columns)}"
                     )
                 
@@ -1047,8 +1047,8 @@ def main():
                     result['canopy_temperature_depression'] = result['temperature'] - result['median']
                     result['vapor_pressure_deficit'] = result.apply(lambda x: get_vapor_pressure_deficit(x['temperature'], x['median'], x['relHumidity']), axis=1)
 
-            # Drop potentially erroneous column from gantry_original weather station
-            if args.weather == 'gantry_original' and 'brightness' in result.columns:
+            # Drop potentially erroneous column from EnvironmentLogger weather station
+            if args.weather == 'EnvironmentLogger' and 'brightness' in result.columns:
                 result = result.drop('brightness', axis=1)
 
             # Save CSV to defined output directory
@@ -1058,7 +1058,7 @@ def main():
             result.to_csv(out_path, index=False)
 
             # Clean up input data
-            if args.weather != 'gantry_new':
+            if args.weather != 'MeteorologicalSensor':
                 shutil.rmtree(env_path)
 
         except Exception as e:
@@ -1070,7 +1070,7 @@ def main():
                 print(f"Cleanup skipped or failed for {env_path}: {ce}")
     
     # Clean up input data
-    if args.weather == 'gantry_new':
+    if args.weather == 'MeteorologicalSensor':
         shutil.rmtree(Path(env_path).resolve().parent)
 
 # --------------------------------------------------
