@@ -522,6 +522,47 @@ def download_azmet_rh(date_or_year: str):
 
 
 #-------------------------------------------------------------------------------
+
+def download_gantry_new_csv(season: str, crop: str, out_dir: str, skip_download: bool = False) -> str:
+    irods_dict = get_dict()
+    out_base = os.path.join(out_dir, irods_dict['season'][season], irods_dict['sensor']['MET'])
+    os.makedirs(out_base, exist_ok=True)
+
+    # Check if file already exists
+    existing = glob.glob(os.path.join(out_base, "**", "all_sensors_long_merged.csv"), recursive=True)
+    if existing:
+        print(f"Using existing gantry_new CSV: {existing[0]}")
+        return existing[0]
+
+    if skip_download:
+        raise FileNotFoundError(f"--nodownload specified and file not found under {out_base}")
+
+    # Perform download
+    data_path = os.path.join(
+        irods_dict['server_path'],
+        irods_dict['season'][season],
+        irods_dict['level']['2'],
+        irods_dict['sensor']['MET'],
+        crop
+    )
+    sequence = "all_sensors_long_merged.csv"
+    files = get_file_list(data_path, sequence)
+    if not files:
+        raise FileNotFoundError(f"No gantry_new file found for season {season}, crop {crop}")
+
+    download_files(item=files[0], out_path=out_base)
+
+    # Locate the file after download
+    candidates = glob.glob(os.path.join(out_base, "**", sequence), recursive=True)
+    if not candidates:
+        raise FileNotFoundError(f"Downloaded gantry_new file not found under {out_base}")
+    return candidates[0]
+
+
+
+
+
+#-------------------------------------------------------------------------------
 def download_files(item, out_path):
     '''
     Uses iRODS to access the CyVerse Data Store. The function downloads data and extracts contents from ".tar" and "tar.gz" files if applicable.
@@ -549,10 +590,21 @@ def download_files(item, out_path):
         # Extract date string from item path (two formats supported)
         try:
             match_str = re.search(r'\d{4}\-\d{2}\-\d{2}\_\_\d{2}\-\d{2}\-\d{2}\-\d{3}', item)
-            date = match_str.group()
-        except Exception:
-            match_str = re.search(r'\d{4}\-\d{2}\-\d{2}', item)
-            date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
+            if match_str:
+                date = match_str.group()
+            else:
+                # Try simpler date format
+                match_str = re.search(r'\d{4}\-\d{2}\-\d{2}', item)
+                if match_str:
+                    date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
+                else:
+                    # No date found, raise a warning and ignore the date
+                    print("No date found")
+                    date = "unknown_date"
+        except Exception as e:
+            print(f"Could not extract date from {item}: {e}")
+            date = "unknown_date"
+            
         date = str(date)
 
         print(f"Found item {item}.")
@@ -778,6 +830,16 @@ def main():
     # Find dates for this season
     path_list = [path for path in glob.glob(os.path.join(data_path, '*')) if '2222' not in path]
 
+    # Handle gantry_new station
+    gantry_new_csv_path = None
+    if args.weather == 'gantry_new':
+        gantry_new_csv_path = download_gantry_new_csv(
+            season=args.season,
+            crop=args.crop,
+            out_dir=args.out_dir
+        )
+
+
     # Iterate through all dates within this season
     for path in path_list:
         try:
@@ -811,15 +873,7 @@ def main():
                 # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMET hourly data
                 azmet_data = download_azmet_rh(date_species)
             elif args.weather == 'gantry_new':
-                for date in date_list:
-                    env_path = download_data(
-                                    crop = args.crop,
-                                    season = args.season,
-                                    level = '2',
-                                    sensor = 'MET',
-                                    sequence = f"all_sensors_long_merged.csv",
-                                    cwd = wd,
-                                    outdir = args.out_dir)
+                env_path = gantry_new_csv_path
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
             
@@ -854,7 +908,7 @@ def main():
 
             os.chdir(wd)
 
-            print(meta_df)
+            #print(meta_df)
 
             # Open phenotype data
             if args.plot_level:
@@ -880,7 +934,7 @@ def main():
                     )
 
             # Open weather data
-            print(pheno_df)
+            #print(pheno_df)
 
             if args.weather == "gantry_original":
                 env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
@@ -906,29 +960,82 @@ def main():
             elif args.weather == 'gantry_new': 
                 env_df = pd.read_csv(
                     env_path,
-                    sep=",",           # or sep=";", sep="\t"
-                    comment="#",
-                    na_values=["NA", "NaN", "-999", "-99"],
-                    header=None,                # no header in file
-                    names=["plot_id", "sensor_type", "tarball_name", "meta_date", "meta_time", "meta_crop", "name", "date", 
-                    "date_int", "tension", "value", "timestamp", "solar_flux_density", "precipitation", "number_lightnings", 
-                    "lightning_distance", "wind_speed", "wind_direction", "max_wind_speed", "air_temperature", 
-                    "absolute_pressure", "relative_humidity", "relative_humidity_sensor_temperature", 
-                    "NS_tilt_angle", "EW_tilt_angle"]
+                    header=0,
+                    low_memory=False
                 )
+                env_df.columns = env_df.columns.str.strip()
+                
+                required_cols = {"timestamp"}
+                missing_cols = required_cols - set(env_df.columns)
+                if missing_cols:
+                    raise RuntimeError(
+                        f"gantry_new CSV missing required columns: {missing_cols}. "
+                        f"Columns present: {list(env_df.columns)}"
+                    )
+                
+                if "sensor_type" in env_df.columns:
+                    env_df = env_df[env_df["sensor_type"] == "weather_station"].copy()
+
+                
                 # Add in a time column to more closely match with gantry data
                 env_df["time"] = (
-                    pd.to_datetime(env_df['timestamp'], format="%Y.%m.%d-%H:%M:%S", errors="coerce")
+                    pd.to_datetime(env_df['timestamp'], format="%Y-%m-%d %H:%M:%S.%f", errors="coerce")
                     .dt.tz_localize("UTC")
                     .dt.tz_convert("America/Phoenix")
+                    .dt.tz_localize(None) 
                 )
+                
+                
+
+                env_df = env_df.dropna(subset=["time"])
+
+                
                 # Rename some columns to match the original gantry data for consistency
                 env_df = env_df.rename(columns={"air_temperature": "temperature", "relative_humidity": "relHumidity"})
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
-            print(env_df)
+            #print(env_df)
+            
+            drop_columns = ['NS_tilt_angle', 'EW_tilt_angle', 'plot_id', 'sensor_type', 'tarball_name', 'number_lightnings', 'lightning_distance',
+                            'meta_date', 'meta_time', 'meta_crop', 'name', 'date', 'date_int', 'tension', 'value', 'timestamp']
+            env_df = env_df.drop(drop_columns, axis=1)
+            
+            
+            # Remove known placeholder values (adjust columns if needed)
+            # for col in ["temperature", "relHumidity", "wind_speed", "wind_direction",
+                        # "max_wind_speed", "absolute_pressure", "solar_flux_density",
+                        # "precipitation"]:
+                # if col in env_df.columns:
+                    # env_df = env_df[env_df[col].astype(str) != "-9999"]
 
+            # Sort by time (required by merge_asof)
+            env_df = env_df.sort_values("time")
+
+            # --- Ensure pheno_df['time'] is present, tz-naive, and sorted ---
+            #pheno_df["time"] = pd.to_datetime(pheno_df["time"], errors="coerce")
+            #pheno_df = pheno_df.dropna(subset=["time"]).sort_values("time")
+
+            # --- Sanity checks (helpful debug) ---
+            if env_df.empty:
+                raise RuntimeError(
+                    "No valid weather rows after cleaning: timestamp parse failures or all -9999 placeholders.\n"
+                    f"Example bad timestamps (first 5): {env_df['timestamp'].head(5).tolist() if 'timestamp' in env_df else 'N/A'}"
+                )
+            if pheno_df.empty:
+                raise RuntimeError(
+                    "No valid phenotype rows after cleaning—check CSV selection and time derivation in get_date_position()."
+                )
+
+            
             # Merge the phenotype and weather dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
+            
+            print("pheno_df columns:", list(pheno_df.columns))
+            print("env_df columns:", list(env_df.columns))
+            print("pheno_df time dtype:", pheno_df["time"].dtype if "time" in pheno_df.columns else "missing")
+            print("env_df time dtype:", env_df["time"].dtype if "time" in env_df.columns else "missing")
+            print("pheno_df time NaT rate:", pheno_df["time"].isna().mean() if "time" in pheno_df.columns else "n/a")
+            print("env_df time NaT rate:", env_df["time"].isna().mean() if "time" in env_df.columns else "n/a")
+
             result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
 
             # Calculate additional columns based on instrument (sensor) type
@@ -951,7 +1058,8 @@ def main():
             result.to_csv(out_path, index=False)
 
             # Clean up input data
-            shutil.rmtree(env_path)
+            if args.weather != 'gantry_new':
+                shutil.rmtree(env_path)
 
         except Exception as e:
             print(f"An error occurred while processing path: {path}: {e}. Continuing with next path.")
@@ -960,7 +1068,10 @@ def main():
                     shutil.rmtree(env_path)
             except Exception as ce:
                 print(f"Cleanup skipped or failed for {env_path}: {ce}")
-
+    
+    # Clean up input data
+    if args.weather == 'gantry_new':
+        shutil.rmtree(Path(env_path).resolve().parent)
 
 # --------------------------------------------------
 if __name__ == '__main__':
