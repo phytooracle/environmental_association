@@ -17,8 +17,11 @@ from datetime import datetime, timedelta
 import re
 import subprocess as sp
 import shutil
+import shlex
 import math
 import geopandas as gpd
+from pathlib import Path
+import time
 
 # --------------------------------------------------
 def get_args():
@@ -75,10 +78,14 @@ def get_args():
                 
     parser.add_argument('-w',
                         '--weather',
-                        help='Which weather station to use (AZMET, gantry_original)',
+                        help='Which weather station to use (AZMet, EnvironmentLogger, MeteorologicalSensor)',
                         type=str,
-                        choices=['azmet', 'gantry_original'],
+                        choices=['AZMet', 'EnvironmentLogger', 'MeteorologicalSensor'],
                         required=True)
+    
+    parser.add_argument('--nodownload',
+                        help='Add flag to skip downloading sensor data in case it is already present.',
+                        action='store_true')
 
     return parser.parse_args()
 
@@ -321,6 +328,7 @@ def process_file(jfile):
 
     try:
         with open(jfile) as f:
+            print(f"Opening {jfile}...", flush=True)
             data = json.load(f)
             for item in data['environment_sensor_readings']:
                 # Convert to appropriate datetime format
@@ -336,6 +344,7 @@ def process_file(jfile):
                 # Add PAR to df 
                 df['par'] = float(item['sensor par']['value'])
                 
+                print(f"appending df...", flush=True)
                 dfs.append(df)
 
     except:
@@ -346,25 +355,63 @@ def process_file(jfile):
 
 
 #-------------------------------------------------------------------------------
-def get_environment_df(data_path):
-    '''
-    Uses multiprocessing to run the function `process_file` to extract multiple Environmental Logger JSON files and combine them into a single dataframe. 
+# def get_environment_df(data_path):
+    # '''
+    # Uses multiprocessing to run the function `process_file` to extract multiple Environmental Logger JSON files and combine them into a single dataframe. 
     
-    Input:
-        - data_path: Path containing the raw data (level_0)
-    Output: 
-        - Merged dataframe containing the timestamp and environmental parameters from multiple Environmental Logger JSON files
-    '''
+    # Input:
+        # - data_path: Path containing the raw data (level_0)
+    # Output: 
+        # - Merged dataframe containing the timestamp and environmental parameters from multiple Environmental Logger JSON files
+    # '''
         
-    with Pool() as pool:
-        results = pool.map(process_file, glob.glob(data_path))
+    # with Pool() as pool:
+        # results = pool.map(process_file, glob.glob(data_path))
 
-    dfs = [df for result in results for df in result]
+    # dfs = [df for result in results for df in result]
 
-    # Combine all dataframes in the list into one
-    env_df = pd.concat(dfs, ignore_index=True)
+ #   Combine all dataframes in the list into one
+    # print(f"Combining all EnvironmentLogger dfs...", flush=True)
+    # env_df = pd.concat(dfs, ignore_index=True)
+    # print(f"EnvironmentLogger dfs combined", flush=True)
 
-    return env_df.sort_values('time')
+    # return env_df.sort_values('time')
+
+
+def get_environment_df(data_path):
+    """
+    Serial version of the EnvironmentLogger extractor.
+    Runs process_file() one file at a time for maximum transparency.
+    """
+
+    file_list = glob.glob(data_path)
+    print(f"[EnvironmentLogger] Found {len(file_list)} files to process.", flush=True)
+
+    all_dfs = []
+
+    for idx, jfile in enumerate(file_list, start=1):
+        print(f"[EnvironmentLogger] ({idx}/{len(file_list)}) Processing: {jfile}", flush=True)
+
+        try:
+            dfs = process_file(jfile)   # process_file returns a list of dfs
+            num_rows = sum(len(df) for df in dfs)
+            print(f"[EnvironmentLogger]     -> Extracted {num_rows} rows from file.", flush=True)
+
+            all_dfs.extend(dfs)
+
+        except Exception as e:
+            print(f"[EnvironmentLogger] ERROR while processing {jfile}: {e}", flush=True)
+            continue
+
+    if not all_dfs:
+        raise RuntimeError("No EnvironmentLogger dataframes extracted from any file.")
+
+    print("[EnvironmentLogger] Combining all dataframes...", flush=True)
+    env_df = pd.concat(all_dfs, ignore_index=True)
+    print("[EnvironmentLogger] Combination complete.", flush=True)
+
+    return env_df.sort_values("time")
+
 
 
 #-------------------------------------------------------------------------------
@@ -429,7 +476,8 @@ def get_dict():
             'PS2': 'ps2Top',
             'RGB': 'stereoTop',
             '3D': 'scanner3DTop',
-            'ENV': 'EnvironmentLogger'
+            'ENV': 'EnvironmentLogger',
+            'MET': 'MeteorologicalSensor'
         }
     }
 
@@ -451,13 +499,16 @@ def get_file_list(data_path, sequence):
     result = sp.run(f'ilocate {os.path.join(data_path, "%", f"{sequence}")}', stdout=sp.PIPE, shell=True)
     files = result.stdout.decode('utf-8').split('\n')
 
+    # Filter out ilocate errors and empty lines
+    files = [f for f in files if f and not f.strip().startswith("ERROR:")]
+
     return files
 
 
 #-------------------------------------------------------------------------------
-def download_azmet_rh(date_or_year: str):
+def download_AZMet_rh(date_or_year: str):
     """
-    Download AZMET raw hourly 'rh.txt' file for station 06 (Maricopa) based on the provided date/year string.
+    Download AZMet raw hourly 'rh.txt' file for station 06 (Maricopa) based on the provided date/year string.
     - Accepts 'yyyy' or 'yyyy-MM-dd' and extracts the year.
     - Uses current path logic for years >= 2023; legacy logic otherwise.
     - Always saves to the current working directory as 'azmet_06<YY>_rh.txt'.
@@ -475,14 +526,14 @@ def download_azmet_rh(date_or_year: str):
 
     yy = year[-2:]  # last two digits
     filename = f"azmet_06{yy}_rh.txt"
-    out_path = os.getcwd() / filename
+    out_path = os.path.join(os.getcwd(), filename)
 
     # Path logic (per your spec: only the base differs)
     if yr_num >= 2023:
         url_base = "https://azmet.arizona.edu/azmet/data/06"
     else:
         if yr_num < 2003:
-            raise ValueError("This application does not support AZMET data for years before 2003.")
+            raise ValueError("This application does not support AZMet data for years before 2003.")
         else:
             url_base = "https://cales.arizona.edu/azmet/data/06"  # legacy base
 
@@ -500,7 +551,7 @@ def download_azmet_rh(date_or_year: str):
 
     try:
         sp.run(cmd, check=True, capture_output=True, text=True)
-        return out_path.resolve()
+        return out_path
     except FileNotFoundError:
         raise RuntimeError("wget not found on PATH. Please install wget and try again.")
     except sp.CalledProcessError as e:
@@ -510,6 +561,60 @@ def download_azmet_rh(date_or_year: str):
             f"URL: {url}\n"
             f"STDERR: {stderr}"
         )
+
+
+#-------------------------------------------------------------------------------
+
+def download_MeteorologicalSensor_csv(season: str, crop: str, out_dir: str, skip_download: bool = False) -> str:
+    irods_dict = get_dict()
+    out_base = os.path.join(out_dir, irods_dict['season'][season], irods_dict['sensor']['MET'])
+    os.makedirs(out_base, exist_ok=True)
+
+    sequence = "all_sensors_long_merged.csv"
+    
+    # Check if file already exists
+    existing = glob.glob(os.path.join(out_base, "**", sequence), recursive=True)
+    if existing:
+        print(f"Using existing MeteorologicalSensor CSV: {existing[0]}")
+        wait_for_stable_file(existing[0], min_stable_secs=3, timeout=180)
+        return existing[0]
+
+    if skip_download:
+        raise FileNotFoundError(f"--nodownload specified and file not found under {out_base}")
+
+    # Perform download
+    data_path = os.path.join(
+        irods_dict['server_path'],
+        irods_dict['season'][season],
+        irods_dict['level']['2'],
+        irods_dict['sensor']['MET'],
+        crop
+    )
+    files = get_file_list(data_path, sequence)
+    if not files:
+        raise FileNotFoundError(f"No MeteorologicalSensor file found for season {season}, crop {crop}")
+    
+    twd = os.getcwd()
+    download_files(item=files[0], out_path=out_base)
+    os.chdir(twd)
+    
+    # Locate the file after download - Retry logic for locating the file after download
+    candidates = []
+    for attempt in range(20):  # ~10 seconds total
+        candidates = glob.glob(os.path.join(out_base, "**", sequence), recursive=True)
+        if candidates:
+            break
+        time.sleep(0.5)
+
+    if not candidates:
+        print(f"DEBUG: Contents of {out_base}: {os.listdir(out_base)}")
+        raise FileNotFoundError(f"Downloaded MeteorologicalSensor file not found under {out_base}")
+    
+    wait_for_stable_file(candidates[0], min_stable_secs=3, timeout=180)
+    return candidates[0]
+
+
+
 
 
 #-------------------------------------------------------------------------------
@@ -526,53 +631,88 @@ def download_files(item, out_path):
         
     os.chdir(out_path)
 
-    if not 'deprecated' in item:
+    if not item or item.strip().startswith("ERROR:"):
+        print(f"Skipping invalid item: {item}")
+        return
+    
+    if 'dep' in item:
+        print(f"Skipping deprecated item: {item}")
+        return
 
+    try:
+        item = os.path.normpath(item)
+
+        # Extract date string from item path (two formats supported)
         try:
-            item = os.path.normpath(item)
-
-            try:
-
-                match_str = re.search(r'\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}-\d{3}', item)
+            match_str = re.search(r'\d{4}\-\d{2}\-\d{2}\_\_\d{2}\-\d{2}\-\d{2}\-\d{3}', item)
+            if match_str:
                 date = match_str.group()
-                # date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
-            except:
-                match_str = re.search(r'\d{4}-\d{2}-\d{2}', item)
-                date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
-                date = str(date)
-
-            print(f"Found item {item}.")
-
-            if not os.path.isdir(date):
-                print(f"Making directory {date}.")
-                os.makedirs(date)
-
-            if '.tar.gz' in item: 
-                print(f"Downloading {item}.")
-                sp.call(f'iget -KPVT {item}', shell=True)
-
-                print(f"Extracting {item}.")
-                ret = sp.call(f'tar -xzvf {os.path.basename(item)} -C {date}', shell=True)
-                # ret = sp.call(f'tar -c --use-compress-program=pigz -f {os.path.basename(item)}', shell=True) #-C {date} 
-
-                if ret != 0:
-                    print(f"Reattempting to extract {item}.")
-                    sp.call(f'tar -xvf {os.path.basename(item)} -C {date}', shell=True)
-
-                sp.call(f'rm {os.path.basename(item)}', shell=True)
-            elif '.tar' in item:
-                print(f"Downloading {item}.")
-                sp.call(f'iget -KPVT {item}', shell=True)
-                
-                print(f"Extracting {item}.")
-                sp.call(f'tar -xvf {os.path.basename(item)} -C {date}', shell=True)
-                sp.call(f'rm {os.path.basename(item)}', shell=True)
             else:
-                os.chdir(date)
-                sp.call(f'iget -KPVT {item}', shell=True)
+                # Try simpler date format
+                match_str = re.search(r'\d{4}\-\d{2}\-\d{2}', item)
+                if match_str:
+                    date = datetime.strptime(match_str.group(), '%Y-%m-%d').date()
+                else:
+                    # No date found, raise a warning and ignore the date
+                    print("No date found")
+                    date = "unknown_date"
+        except Exception as e:
+            print(f"Could not extract date from {item}: {e}")
+            date = "unknown_date"
             
-        except:
-            pass
+        date = str(date)
+
+        print(f"Found item {item}.")
+        if not os.path.isdir(date):
+            print(f"Making directory {date}.")
+            os.makedirs(date)
+
+        # Shell-safe quoting
+        q_item = shlex.quote(os.path.basename(item))  # archive name after iget
+        q_irods_item = shlex.quote(item)              # full iRODS source path
+        q_date = shlex.quote(date)
+
+        if '.tar.gz' in item:
+            print(f"Downloading {item}.")
+            ret = sp.call(f'iget -KPVT {q_irods_item}', shell=True)
+            if ret != 0:
+                print(f"iget failed for {item} (ret={ret}); skipping.")
+                return
+
+            print(f"Extracting {item}.")
+            ret = sp.call(f'tar -xzvf {q_item} -C {q_date}', shell=True)
+            if ret != 0:
+                print(f"Reattempting to extract {item} without -z.")
+                ret2 = sp.call(f'tar -xvf {q_item} -C {q_date}', shell=True)
+                if ret2 != 0:
+                    print(f"Extraction failed for {item}; skipping.")
+            sp.call(f'rm -f {q_item}', shell=True)
+
+        elif '.tar' in item:
+            print(f"Downloading {item}.")
+            ret = sp.call(f'iget -KPVT {q_irods_item}', shell=True)
+            if ret != 0:
+                print(f"iget failed for {item} (ret={ret}); skipping.")
+                return
+
+            print(f"Extracting {item}.")
+            ret = sp.call(f'tar -xvf {q_item} -C {q_date}', shell=True)
+            if ret != 0:
+                print(f"Extraction failed for {item}; skipping.")
+            sp.call(f'rm -f {q_item}', shell=True)
+
+        else:
+            # Non-archive: download directly into the date folder
+            os.chdir(date)
+            ret = sp.call(f'iget -KPVT {q_irods_item}', shell=True)
+            if ret != 0:
+                print(f"iget failed for {item} (ret={ret}); skipping.")
+                return
+
+    except Exception as e:
+        # Don’t crash the whole run; just log and continue
+        print(f"Failure during download_files for {item}: {e}")
+
 
         
 #-------------------------------------------------------------------------------
@@ -715,6 +855,28 @@ def download_geojson(season, crop):
 
     return os.path.basename(irods_path)
 
+#-------------------------------------------------------------------------------
+def wait_for_stable_file(path, min_stable_secs=3, timeout=120):
+    """Wait until `path` exists, is non-zero, and its size is stable for `min_stable_secs`."""
+    start = time.time()
+    last_size = -1
+    last_change = time.time()
+
+    while time.time() - start < timeout:
+        if os.path.isfile(path):
+            size = os.path.getsize(path)
+            if size > 0:
+                if size != last_size:
+                    last_size = size
+                    last_change = time.time()
+                else:
+                    if time.time() - last_change >= min_stable_secs:
+                        return True
+        time.sleep(0.5)
+
+    raise TimeoutError(
+        f"File '{path}' did not become stable/readable within {timeout} seconds. "
+        f"Last observed size={last_size} bytes.")
 
 #-------------------------------------------------------------------------------
 def main():
@@ -728,19 +890,34 @@ def main():
     wd = os.getcwd()
 
     # Download sensor data
-    data_path = download_data(
-                            crop = "NA",
-                            season = args.season,
-                            level = '0',
-                            sensor = args.instrument,
-                            sequence = '%/%.tar' if args.season=='10' else '%/%.tar.gz',
-                            cwd = wd,
-                            outdir = args.out_dir)
+    if args.nodownload:
+        irods_dict = get_dict()
+        data_path = os.path.join(args.out_dir, irods_dict['season'][args.season], irods_dict['sensor'][args.instrument])
+    else: 
+        data_path = download_data(
+                                crop = "NA",
+                                season = args.season,
+                                level = '0',
+                                sensor = args.instrument,
+                                sequence = '%/%.tar' if args.season=='10' else '%/%.tar.gz',
+                                cwd = wd,
+                                outdir = args.out_dir)
     os.chdir(wd)
 
     # Find dates for this season
     path_list = [path for path in glob.glob(os.path.join(data_path, '*')) if '2222' not in path]
 
+    # Handle MeteorologicalSensor station
+    MeteorologicalSensor_csv_path = None
+    if args.weather == 'MeteorologicalSensor':
+        print("Downloading MeteorologicalSensor data")
+        MeteorologicalSensor_csv_path = download_MeteorologicalSensor_csv(
+            season=args.season,
+            crop=args.crop,
+            out_dir=args.out_dir
+        )
+        print("MeteorologicalSensor data downloaded")
+        
     # Iterate through all dates within this season
     for path in path_list:
         try:
@@ -759,7 +936,8 @@ def main():
             date_list = get_env_dates(date_string = date_species)
 
             # Download weather data
-            if args.weather == 'gantry_original':
+            if args.weather == 'EnvironmentLogger':
+                print("Downloading EnvironmentLogger data")
                 for date in date_list:
                     env_path = download_data(
                                     crop = "NA",
@@ -769,18 +947,21 @@ def main():
                                     sequence = f'{date}.tar.gz',
                                     cwd = wd,
                                     outdir = args.out_dir)
-            elif args.weather == 'azmet':
-                print('Downloading AZMET data - placeholder')
-                # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMET hourly data
-                azmet_data = download_azmet_rh(date_species)
+                print("EnvironmentLogger data downloaded")
+            elif args.weather == 'AZMet':
+                print('Downloading AZMet data')
+                # Date string expected to be in format yyyy-MM-dd; parse this to get the correct AZMet hourly data
+                AZMet_data = download_AZMet_rh(date_species)
+                print("AZMet data downloaded")
+            elif args.weather == 'MeteorologicalSensor':
+                env_path = MeteorologicalSensor_csv_path
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
             
             os.chdir(wd)
-            
-            print(f'Date string: {date_string}')
 
             # Get gantry metadata
+            print("Setting meta_df")
             meta_df = get_date_position(data_path = os.path.join(data_path, date_string, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(data_path, date_string, '*', '*', '*.json'))
     
             # Determining the sequence to use based on specified instrument (sensor) name
@@ -793,11 +974,13 @@ def main():
                     sensor_seq = f'{date_species}/%_detect_out.tar'
             else:
                 raise ValueError(f"Unsupported instrument: {args.instrument}.")
+            print("sensor_seq: ", sensor_seq)
 
             # Download phenotype data
             if args.data_path:
                 csv_path = args.data_path
             else:
+                print("Downloading phenotype data")
                 csv_path = download_data(
                                         crop = args.crop,
                                         season = args.season,
@@ -809,32 +992,37 @@ def main():
 
             os.chdir(wd)
 
-            print(meta_df)
-
             # Open phenotype data
             if args.plot_level:
-                pheno_df  = get_phenotype_df_plot(
-                    df = meta_df, 
-                    data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*plot_thresholding_results.csv'))[0]
+                candidates = glob.glob(os.path.join(csv_path, date_string, '*', '*plot_thresholding_results.csv'))
+                if not candidates:
+                    print(f"No plot_thresholding_results.csv found for {date_string}; skipping this date.")
+                    continue
+                print("Setting pheno_df")
+                pheno_df = get_phenotype_df_plot(
+                    df=meta_df, 
+                    data_path=candidates[0]
                     )
             else:
+                candidates = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))
+                if not candidates:
+                    print(f"No csv found for {date_string}; skipping this date.")
+                    continue
+                print("Setting pheno_df")
                 pheno_df = get_phenotype_df(
                     df = meta_df, 
-                    data_path = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))[0], 
+                    data_path = candidates[0], 
                     data_type=args.instrument,
                     season=args.season,
                     crop=args.crop
                     )
 
-            # Open weather data
-            print(pheno_df)
-
-            if args.weather == "gantry_original":
+            print("Setting env_df")
+            if args.weather == "EnvironmentLogger":
                 env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
-            elif args.weather == "azmet":
-                print("AZMET phenotype data processing not yet implemented.")
+            elif args.weather == "AZMet":
                 env_df = pd.read_csv(
-                    azmet_data,
+                    AZMet_data,
                     sep=",",           # or sep=";", sep="\t"
                     comment="#",
                     na_values=["NA", "NaN", "-999", "-99"],
@@ -851,15 +1039,74 @@ def main():
                     + pd.to_timedelta(env_df["hour_of_day"] % 24, unit="h")    # hour (24 → 0)
                     + pd.to_timedelta((env_df["hour_of_day"] == 24).astype(int), unit="D")  # rollover day if hour=24
                 )
+            elif args.weather == 'MeteorologicalSensor': 
+                env_df = pd.read_csv(
+                    env_path,
+                    header=0,
+                    low_memory=False
+                )
+                env_df.columns = env_df.columns.str.strip()
+                
+                required_cols = {"timestamp"}
+                missing_cols = required_cols - set(env_df.columns)
+                if missing_cols:
+                    raise RuntimeError(
+                        f"MeteorologicalSensor CSV missing required columns: {missing_cols}. "
+                        f"Columns present: {list(env_df.columns)}"
+                    )
+                
+                if "sensor_type" in env_df.columns:
+                    env_df = env_df[env_df["sensor_type"] == "weather_station"].copy()
+
+                
+                # Add in a time column to more closely match with gantry data
+                env_df["time"] = (
+                    pd.to_datetime(env_df['timestamp'], format="%Y-%m-%d %H:%M:%S.%f", errors="coerce")
+                    .dt.tz_localize("UTC")
+                    .dt.tz_convert("America/Phoenix")
+                    .dt.tz_localize(None) 
+                )
+                
+                drop_columns = ['NS_tilt_angle', 'EW_tilt_angle', 'plot_id', 'sensor_type', 'tarball_name', 'number_lightnings', 'lightning_distance',
+                            'meta_date', 'meta_time', 'meta_crop', 'name', 'date', 'date_int', 'tension', 'value', 'timestamp']
+                env_df = env_df.drop(drop_columns, axis=1)
+
+                env_df = env_df.dropna(subset=["time"])
+
+                
+                # Rename some columns to match the original gantry data for consistency
+                env_df = env_df.rename(columns={"air_temperature": "temperature", "relative_humidity": "relHumidity"})
             else:
                 raise ValueError(f"Unsupported weather station: {args.weather}.")
-            print(env_df)
 
+            print("sorting env_df")
+            env_df = env_df.sort_values("time")
+            if env_df.empty:
+                raise RuntimeError(
+                    "No valid weather rows after cleaning: timestamp parse failures or all -9999 placeholders.\n"
+                    f"Example bad timestamps (first 5): {env_df['timestamp'].head(5).tolist() if 'timestamp' in env_df else 'N/A'}"
+                )
+            if pheno_df.empty:
+                raise RuntimeError(
+                    "No valid phenotype rows after cleaning—check CSV selection and time derivation in get_date_position()."
+                )
+
+            
+            
+            print("pheno_df columns:", list(pheno_df.columns))
+            print("env_df columns:", list(env_df.columns))
+            print("pheno_df time dtype:", pheno_df["time"].dtype if "time" in pheno_df.columns else "missing")
+            print("env_df time dtype:", env_df["time"].dtype if "time" in env_df.columns else "missing")
+            print("pheno_df time NaT rate:", pheno_df["time"].isna().mean() if "time" in pheno_df.columns else "n/a")
+            print("env_df time NaT rate:", env_df["time"].isna().mean() if "time" in env_df.columns else "n/a")
+            
             # Merge the phenotype and weather dataframes on the "time" column, finding the closest match in env_df for each row in pheno_df
+            print("merging dfs")
             result = pd.merge_asof(pheno_df, env_df, on='time', direction='nearest')
 
             # Calculate additional columns based on instrument (sensor) type
             if args.instrument == 'FLIR':
+                print("calculate additional columns...")
                 if args.plot_level:
                     result['canopy_temperature_depression'] = result['temperature'] - result['plot_plant_temp']
                     result['vapor_pressure_deficit'] = result.apply(lambda x: get_vapor_pressure_deficit(x['temperature'], x['plot_plant_temp'], x['relHumidity']), axis=1)
@@ -867,8 +1114,8 @@ def main():
                     result['canopy_temperature_depression'] = result['temperature'] - result['median']
                     result['vapor_pressure_deficit'] = result.apply(lambda x: get_vapor_pressure_deficit(x['temperature'], x['median'], x['relHumidity']), axis=1)
 
-            # Drop potentially erroneous column from gantry_original weather station
-            if args.weather == 'gantry_original' and 'brightness' in result.columns:
+            # Drop potentially erroneous column from EnvironmentLogger weather station
+            if args.weather == 'EnvironmentLogger' and 'brightness' in result.columns:
                 result = result.drop('brightness', axis=1)
 
             # Save CSV to defined output directory
@@ -878,12 +1125,26 @@ def main():
             result.to_csv(out_path, index=False)
 
             # Clean up input data
-            shutil.rmtree(env_path)
+            if args.weather == 'EnvironmentLogger':
+                shutil.rmtree(env_path)
 
-        except:
-            print(f"An error occurred while processing path: {path}. Continuing with next path.")
-            shutil.rmtree(env_path)
-
+        except Exception as e:
+            print(f"An error occurred while processing path: {path}: {e}. Continuing with next path.")
+            try:
+                if 'env_path' in locals() and env_path and os.path.isdir(env_path):
+                    shutil.rmtree(env_path)
+            except Exception as ce:
+                print(f"Cleanup skipped or failed for {env_path}: {ce}")
+    
+    # Clean up input data
+    if args.weather == 'MeteorologicalSensor':
+        shutil.rmtree(Path(env_path).resolve().parent)
+    if args.weather == 'AZMet':
+        p = Path(AZMet_data)
+        if p.is_file():
+            p.unlink()
+        else:
+            print(f"Warning: file not found: {p}")
 
 # --------------------------------------------------
 if __name__ == '__main__':
