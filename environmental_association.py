@@ -23,6 +23,7 @@ import geopandas as gpd
 from pathlib import Path
 import time
 
+
 # --------------------------------------------------
 def get_args():
     """Get command-line arguments"""
@@ -278,37 +279,176 @@ def get_phenotype_df(df, data_path, data_type, season, crop):
 #-------------------------------------------------------------------------------
 def get_phenotype_df_plot(df, data_path):
     '''
-    Get phenotype CSV for plot-level thermal from processed data (level_2) data on the CyVerse Data Store. 
-    
+    Get phenotype CSV for plot-level thermal from processed data (level_2).
+
+    This function:
+      - attaches plot identity to each FLIR record
+      - preserves capture-level timestamps
+      - computes plot-level representative time (t_plot)
+      - does NOT collapse rows or overwrite time
+
     Input:
-        - df: Dataframe containing the gantry time and positions
-        - data_path: Path containing the processed data (level_2)
-    Output: 
-        - Merged dataframe containing the phenotype data in addition to the gantry time and positions in df
+        - df: metadata dataframe (not used for matching here, only retained for compatibility)
+        - data_path: path to plot_thresholding_results.csv
+
+    Output:
+        - pheno_df with added columns:
+            plot, plot_lat, plot_lon, t_plot
     '''
 
+    # ------------------------------------------------------------------
+    # 1. Load FLIR phenotype data (already plot-level FLIR points)
+    # ------------------------------------------------------------------
     pheno_df = pd.read_csv(data_path)
-    # print(pheno_df)
 
-    # assuming df and pheno_df are pandas dataframes
-    df_coords = df[['latitude', 'longitude']].to_numpy()
-    pheno_coords = pheno_df[['center_lat', 'center_lon']].to_numpy()
+    # Ensure time column is datetime
+    if 'time' in pheno_df.columns:
+        pheno_df['time'] = pd.to_datetime(pheno_df['time'])
+    else:
+        raise ValueError("Expected 'time' column in plot-level FLIR phenotype CSV")
 
-    # calculate pairwise distances
-    distances = cdist(pheno_coords, df_coords)
+    # ------------------------------------------------------------------
+    # 2. Load plot geometry
+    # ------------------------------------------------------------------
+    geojson_path = download_geojson(season=season, crop=crop)
 
-    # find index of minimum distance for each row
-    min_indices = np.argmin(distances, axis=1)
+    plots_gdf = (
+        gpd.read_file(geojson_path)
+        .drop('plot', axis=1, errors='ignore')
+        .rename(columns={'ID': 'plot'})
+    )
 
-    # assuming df and pheno_df are pandas dataframes
-    # and min_indices is the array of indices of closest points in df
-    pheno_df['time'] = df['time'].iloc[min_indices].values
-    pheno_df['x_position'] = df['x_position'].iloc[min_indices].values
-    pheno_df['y_position'] = df['y_position'].iloc[min_indices].values
-    pheno_df['z_position'] = df['z_position'].iloc[min_indices].values
-    pheno_df['capture_sequence'] = df['capture_sequence'].iloc[min_indices].values
+    plots_gdf['plot'] = plots_gdf['plot'].astype(str).str.zfill(4)
+    plots_gdf['plot_lon'] = plots_gdf.geometry.centroid.x
+    plots_gdf['plot_lat'] = plots_gdf.geometry.centroid.y
 
-    return pheno_df.sort_values('time')
+    # ------------------------------------------------------------------
+    # 3. Convert FLIR points to GeoDataFrame
+    #    (expects center_lat / center_lon from thresholding results)
+    # ------------------------------------------------------------------
+    if not {'center_lat', 'center_lon'}.issubset(pheno_df.columns):
+        raise ValueError("Expected 'center_lat' and 'center_lon' in plot-level FLIR CSV")
+
+    pheno_gdf = gpd.GeoDataFrame(
+        pheno_df,
+        geometry=gpd.points_from_xy(pheno_df.center_lon, pheno_df.center_lat),
+        crs=plots_gdf.crs
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Spatial join: assign plot to each FLIR measurement
+    # ------------------------------------------------------------------
+    pheno_gdf = gpd.sjoin(
+        pheno_gdf,
+        plots_gdf[['plot', 'plot_lat', 'plot_lon', 'geometry']],
+        how='inner',
+        predicate='within'
+    )
+
+    # drop geometry after spatial join to keep dataframe lightweight
+    pheno_df = pd.DataFrame(pheno_gdf.drop(columns='geometry'))
+
+    # ------------------------------------------------------------------
+    # 5. Compute plot-level median timestamp (t_plot)
+    #    and broadcast back to each row
+    # ------------------------------------------------------------------
+    t_plot_df = (
+        pheno_df
+        .groupby('plot')['time']
+        .median()
+        .reset_index(name='t_plot')
+    )
+
+    pheno_df = pheno_df.merge(t_plot_df, on='plot', how='left')
+
+    # ------------------------------------------------------------------
+    # 6. Final ordering (preserve expected behavior)
+    # ------------------------------------------------------------------
+    pheno_df = pheno_df.sort_values('time').reset_index(drop=True)
+
+    return pheno_df
+
+
+#-------------------------------------------------------------------------------
+def associate_weather_spatiotemporal(pheno_df, weather_df, window_minutes=3):
+    """
+    pheno_df: output of get_phenotype_df_plot
+    weather_df: output of get_environment_df
+
+    Returns:
+        pheno_df with added weather columns
+    """
+    weather_df = weather_df.copy()
+    weather_df['time'] = pd.to_datetime(weather_df['time'])
+
+    results = {}
+
+    window = pd.Timedelta(minutes=window_minutes)
+
+    for plot, group in pheno_df.groupby('plot'):
+        t_plot = group['t_plot'].iloc[0]
+        plot_lat = group['plot_lat'].iloc[0]
+        plot_lon = group['plot_lon'].iloc[0]
+
+        # --------------------------------------------------
+        # 1. Temporal filter
+        # --------------------------------------------------
+        dt = (weather_df['time'] - t_plot).abs()
+        candidates = weather_df[dt <= window]
+
+        if not candidates.empty:
+            # --------------------------------------------------
+            # 2a. Spatial nearest neighbor
+            # --------------------------------------------------
+            plot_xy = np.array([[plot_lon, plot_lat]])
+            weather_xy = candidates[['longitude', 'latitude']].to_numpy()
+
+            dists = cdist(plot_xy, weather_xy)
+            idx = dists.argmin()
+
+            wx = candidates.iloc[idx]
+            results[plot] = {
+                'air_temp': wx['air_temp'],
+                'rh': wx['relative_humidity'],
+                'weather_time': wx['time'],
+                'weather_match_type': 'spatiotemporal'
+            }
+        else:
+            # --------------------------------------------------
+            # 2b. Temporal interpolation fallback
+            # --------------------------------------------------
+            results[plot] = {
+                'air_temp': (
+                    weather_df
+                    .set_index('time')['air_temp']
+                    .sort_index()
+                    .interpolate(method='time')
+                    .get(t_plot, np.nan)
+                ),
+                'rh': (
+                    weather_df
+                    .set_index('time')['relative_humidity']
+                    .sort_index()
+                    .interpolate(method='time')
+                    .get(t_plot, np.nan)
+                ),
+                'weather_time': t_plot,
+                'weather_match_type': 'temporal_interpolation'
+            }
+
+    # ------------------------------------------------------
+    # 3. Broadcast results back to all rows
+    # ------------------------------------------------------
+    weather_out = (
+        pd.DataFrame.from_dict(results, orient='index')
+        .reset_index()
+        .rename(columns={'index': 'plot'})
+    )
+
+    pheno_df = pheno_df.merge(weather_out, on='plot', how='left')
+
+    return pheno_df
+
 
 #-------------------------------------------------------------------------------
 def process_file(jfile):
@@ -355,29 +495,6 @@ def process_file(jfile):
 
 
 #-------------------------------------------------------------------------------
-# def get_environment_df(data_path):
-    # '''
-    # Uses multiprocessing to run the function `process_file` to extract multiple Environmental Logger JSON files and combine them into a single dataframe. 
-    
-    # Input:
-        # - data_path: Path containing the raw data (level_0)
-    # Output: 
-        # - Merged dataframe containing the timestamp and environmental parameters from multiple Environmental Logger JSON files
-    # '''
-        
-    # with Pool() as pool:
-        # results = pool.map(process_file, glob.glob(data_path))
-
-    # dfs = [df for result in results for df in result]
-
- #   Combine all dataframes in the list into one
-    # print(f"Combining all EnvironmentLogger dfs...", flush=True)
-    # env_df = pd.concat(dfs, ignore_index=True)
-    # print(f"EnvironmentLogger dfs combined", flush=True)
-
-    # return env_df.sort_values('time')
-
-
 def get_environment_df(data_path):
     """
     Serial version of the EnvironmentLogger extractor.
@@ -411,7 +528,6 @@ def get_environment_df(data_path):
     print("[EnvironmentLogger] Combination complete.", flush=True)
 
     return env_df.sort_values("time")
-
 
 
 #-------------------------------------------------------------------------------
@@ -564,7 +680,6 @@ def download_AZMet_rh(date_or_year: str):
 
 
 #-------------------------------------------------------------------------------
-
 def download_MeteorologicalSensor_csv(season: str, crop: str, out_dir: str, skip_download: bool = False) -> str:
     irods_dict = get_dict()
     out_base = os.path.join(out_dir, irods_dict['season'][season], irods_dict['sensor']['MET'])
@@ -612,9 +727,6 @@ def download_MeteorologicalSensor_csv(season: str, crop: str, out_dir: str, skip
     
     wait_for_stable_file(candidates[0], min_stable_secs=3, timeout=180)
     return candidates[0]
-
-
-
 
 
 #-------------------------------------------------------------------------------
@@ -714,7 +826,6 @@ def download_files(item, out_path):
         print(f"Failure during download_files for {item}: {e}")
 
 
-        
 #-------------------------------------------------------------------------------
 def download_data(crop, season, level, sensor, sequence, cwd, outdir, download=True, download_first=False):
     '''
@@ -848,12 +959,14 @@ def get_geojson_path(season, crop):
     except KeyError:
         raise ValueError(f"No geojson path found for season '{season}' and crop '{crop}'")
 
+
 #-------------------------------------------------------------------------------
 def download_geojson(season, crop):
     irods_path = get_geojson_path(season=season, crop=crop)
     sp.call(f'iget -fKPVT {irods_path}', shell=True)
 
     return os.path.basename(irods_path)
+
 
 #-------------------------------------------------------------------------------
 def wait_for_stable_file(path, min_stable_secs=3, timeout=120):
@@ -877,6 +990,7 @@ def wait_for_stable_file(path, min_stable_secs=3, timeout=120):
     raise TimeoutError(
         f"File '{path}' did not become stable/readable within {timeout} seconds. "
         f"Last observed size={last_size} bytes.")
+
 
 #-------------------------------------------------------------------------------
 def main():
@@ -1017,6 +1131,13 @@ def main():
                     crop=args.crop
                     )
 
+            if args.plot_level and args.instrument == 'FLIR':
+                pheno_df = associate_weather_spatiotemporal(
+                    pheno_df=pheno_df,
+                    weather_df=env_df,
+                    window_minutes=3
+                )
+
             print("Setting env_df")
             if args.weather == "EnvironmentLogger":
                 env_df = get_environment_df(data_path = os.path.join(env_path, '*', '*', '*', '*.json') if args.season == '10' else os.path.join(env_path, '*', '*', '*.json'))
@@ -1145,6 +1266,7 @@ def main():
             p.unlink()
         else:
             print(f"Warning: file not found: {p}")
+
 
 # --------------------------------------------------
 if __name__ == '__main__':
