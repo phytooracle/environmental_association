@@ -277,39 +277,37 @@ def get_phenotype_df(df, data_path, data_type, season, crop):
 
 
 #-------------------------------------------------------------------------------
-def get_phenotype_df_plot(df, data_path):
-    '''
+def get_phenotype_df_plot(df, data_path, season, crop):
+    """
     Get phenotype CSV for plot-level thermal from processed data (level_2).
 
     This function:
-      - attaches plot identity to each FLIR record
-      - preserves capture-level timestamps
-      - computes plot-level representative time (t_plot)
-      - does NOT collapse rows or overwrite time
+      - loads plot-level FLIR phenotype outputs
+      - loads plot geometry
+      - derives plot-level timing (t_plot) FROM meta_df (gantry FLIR captures)
+      - attaches plot identity and centroids
+      - does NOT assume time exists in the level-2 CSV
 
     Input:
-        - df: metadata dataframe (not used for matching here, only retained for compatibility)
-        - data_path: path to plot_thresholding_results.csv
+        df        : meta_df containing gantry FLIR capture positions and time
+                    (expects columns: time, latitude, longitude)
+        data_path: path to plot_thresholding_results.csv
 
     Output:
-        - pheno_df with added columns:
-            plot, plot_lat, plot_lon, t_plot
-    '''
+        pheno_df augmented with:
+            plot
+            plot_lat, plot_lon
+            t_plot
+    """
 
-    # ------------------------------------------------------------------
-    # 1. Load FLIR phenotype data (already plot-level FLIR points)
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # 1. Read plot-level phenotype CSV (NO time assumption here)
+    # ------------------------------------------------------------
     pheno_df = pd.read_csv(data_path)
 
-    # Ensure time column is datetime
-    if 'time' in pheno_df.columns:
-        pheno_df['time'] = pd.to_datetime(pheno_df['time'])
-    else:
-        raise ValueError("Expected 'time' column in plot-level FLIR phenotype CSV")
-
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     # 2. Load plot geometry
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     geojson_path = download_geojson(season=season, crop=crop)
 
     plots_gdf = (
@@ -319,52 +317,79 @@ def get_phenotype_df_plot(df, data_path):
     )
 
     plots_gdf['plot'] = plots_gdf['plot'].astype(str).str.zfill(4)
-    plots_gdf['plot_lon'] = plots_gdf.geometry.centroid.x
-    plots_gdf['plot_lat'] = plots_gdf.geometry.centroid.y
+    plots_proj = plots_gdf.to_crs(epsg=32612)  # UTM 12N
+    centroids = plots_proj.geometry.centroid.to_crs(plots_gdf.crs)
 
-    # ------------------------------------------------------------------
-    # 3. Convert FLIR points to GeoDataFrame
-    #    (expects center_lat / center_lon from thresholding results)
-    # ------------------------------------------------------------------
-    if not {'center_lat', 'center_lon'}.issubset(pheno_df.columns):
-        raise ValueError("Expected 'center_lat' and 'center_lon' in plot-level FLIR CSV")
+    plots_gdf['plot_lon'] = centroids.x
+    plots_gdf['plot_lat'] = centroids.y
 
-    pheno_gdf = gpd.GeoDataFrame(
-        pheno_df,
-        geometry=gpd.points_from_xy(pheno_df.center_lon, pheno_df.center_lat),
+    # ------------------------------------------------------------
+    # 3. Convert gantry FLIR metadata (meta_df) to GeoDataFrame
+    #    THIS is where timing comes from
+    # ------------------------------------------------------------
+    if not {'time', 'latitude', 'longitude'}.issubset(df.columns):
+        raise ValueError(
+            "meta_df must contain 'time', 'latitude', and 'longitude' columns "
+            "to derive plot-level timing (t_plot)."
+        )
+
+    meta_gdf = gpd.GeoDataFrame(
+        df.copy(),
+        geometry=gpd.points_from_xy(df.longitude, df.latitude),
         crs=plots_gdf.crs
     )
 
-    # ------------------------------------------------------------------
-    # 4. Spatial join: assign plot to each FLIR measurement
-    # ------------------------------------------------------------------
-    pheno_gdf = gpd.sjoin(
-        pheno_gdf,
-        plots_gdf[['plot', 'plot_lat', 'plot_lon', 'geometry']],
+    meta_gdf['time'] = pd.to_datetime(meta_gdf['time'])
+
+    # ------------------------------------------------------------
+    # 4. Spatial join: gantry FLIR captures within plot extents
+    # ------------------------------------------------------------
+    meta_in_plots = gpd.sjoin(
+        meta_gdf,
+        plots_gdf[['plot', 'geometry']],
         how='inner',
         predicate='within'
     )
 
-    # drop geometry after spatial join to keep dataframe lightweight
-    pheno_df = pd.DataFrame(pheno_gdf.drop(columns='geometry'))
+    # ------------------------------------------------------------
+    # 5. Compute median gantry timestamp per plot (t_plot)
+    # ------------------------------------------------------------
+    # Ensure time is datetime (defensive)
+    meta_in_plots['time'] = pd.to_datetime(meta_in_plots['time'], errors='coerce')
 
-    # ------------------------------------------------------------------
-    # 5. Compute plot-level median timestamp (t_plot)
-    #    and broadcast back to each row
-    # ------------------------------------------------------------------
+    def safe_datetime_median(series):
+        series = series.dropna().sort_values()
+        if series.empty:
+            return pd.NaT
+        return series.iloc[len(series) // 2]
+
     t_plot_df = (
-        pheno_df
-        .groupby('plot')['time']
-        .median()
-        .reset_index(name='t_plot')
+        meta_in_plots
+        .groupby('plot', as_index=False)
+        .agg(t_plot=('time', safe_datetime_median))
     )
 
-    pheno_df = pheno_df.merge(t_plot_df, on='plot', how='left')
+    if meta_in_plots.empty:
+        print(f"Warning: no gantry captures intersect plots for {data_path}")
+    #else:
+        #print("Plots with captures:", meta_in_plots['plot'].unique())
 
-    # ------------------------------------------------------------------
-    # 6. Final ordering (preserve expected behavior)
-    # ------------------------------------------------------------------
-    pheno_df = pheno_df.sort_values('time').reset_index(drop=True)
+    # ------------------------------------------------------------
+    # 6. Attach plot timing and centroids to phenotype dataframe
+    # ------------------------------------------------------------
+    pheno_df['plot'] = pheno_df['plot'].astype(str).str.zfill(4)
+
+    pheno_df = pheno_df.merge(
+        plots_gdf[['plot', 'plot_lat', 'plot_lon']],
+        on='plot',
+        how='left'
+    )
+
+    pheno_df = pheno_df.merge(
+        t_plot_df,
+        on='plot',
+        how='left'
+    )
 
     return pheno_df
 
@@ -1115,7 +1140,9 @@ def main():
                 print("Setting pheno_df")
                 pheno_df = get_phenotype_df_plot(
                     df=meta_df, 
-                    data_path=candidates[0]
+                    data_path=candidates[0],
+                    season=args.season,
+                    crop=args.crop
                     )
             else:
                 candidates = glob.glob(os.path.join(csv_path, date_string, '*', '*.csv'))
@@ -1131,12 +1158,7 @@ def main():
                     crop=args.crop
                     )
 
-            if args.plot_level and args.instrument == 'FLIR':
-                pheno_df = associate_weather_spatiotemporal(
-                    pheno_df=pheno_df,
-                    weather_df=env_df,
-                    window_minutes=3
-                )
+            
 
             print("Setting env_df")
             if args.weather == "EnvironmentLogger":
@@ -1207,6 +1229,16 @@ def main():
                     "No valid weather rows after cleaning: timestamp parse failures or all -9999 placeholders.\n"
                     f"Example bad timestamps (first 5): {env_df['timestamp'].head(5).tolist() if 'timestamp' in env_df else 'N/A'}"
                 )
+                
+            print("env_df columns: ", list(env_df.columns))
+                
+            if args.plot_level and args.instrument == 'FLIR':
+                pheno_df = associate_weather_spatiotemporal(
+                    pheno_df=pheno_df,
+                    weather_df=env_df,
+                    window_minutes=3
+                )    
+                
             if pheno_df.empty:
                 raise RuntimeError(
                     "No valid phenotype rows after cleaning—check CSV selection and time derivation in get_date_position()."
@@ -1215,7 +1247,7 @@ def main():
             
             
             print("pheno_df columns:", list(pheno_df.columns))
-            print("env_df columns:", list(env_df.columns))
+            #print("env_df columns:", list(env_df.columns))
             print("pheno_df time dtype:", pheno_df["time"].dtype if "time" in pheno_df.columns else "missing")
             print("env_df time dtype:", env_df["time"].dtype if "time" in env_df.columns else "missing")
             print("pheno_df time NaT rate:", pheno_df["time"].isna().mean() if "time" in pheno_df.columns else "n/a")
